@@ -1,0 +1,24 @@
+# dependencies (none today; the panel tooling may add some)
+node_modules/
+
+# internal working documents — not published
+PROGRESS.md
+PROJECT_RULES.md
+
+# archives produced by release.ps1
+*.zip
+dist/
+.release-stage/
+
+# env files and keys
+.env
+.env.*
+*.pem
+*.key
+
+# os / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

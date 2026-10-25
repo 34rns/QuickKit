@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExtensionManifest
+  Version="7.0"
+  ExtensionBundleId="com.quickkit.panel"
+  ExtensionBundleVersion="0.3.0"
+  ExtensionBundleName="QuickKit"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ExtensionList>
+    <Extension Id="com.quickkit.panel.main" Version="0.3.0" />
+  </ExtensionList>
+  <ExecutionEnvironment>
+    <HostList>
+      <!-- Generous ranges: loads in AE/Premiere 22.x through 99.x, including the
+           installed 26.5 / 26.0.2 builds and anything newer. -->
+      <Host Name="AEFT" Version="[22.0,99.9]" />
+      <Host Name="PPRO" Version="[22.0,99.9]" />
+    </HostList>
+    <LocaleList>
+      <Locale Code="All" />
+    </LocaleList>
+    <RequiredRuntimeList>
+      <RequiredRuntime Name="CSXS" Version="9.0" />
+    </RequiredRuntimeList>
+  </ExecutionEnvironment>
+  <DispatchInfoList>
+    <Extension Id="com.quickkit.panel.main">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./index.html</MainPath>
+          <ScriptPath>./host/quickkit.jsx</ScriptPath>
+        </Resources>
+        <Lifecycle>
+          <AutoVisible>true</AutoVisible>
+        </Lifecycle>
+        <UI>
+          <Type>Panel</Type>
+          <Menu>QuickKit</Menu>
+          <Geometry>
+            <Size>
+              <Height>640</Height>
+              <Width>360</Width>
+            </Size>
+          </Geometry>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+  </DispatchInfoList>
+</ExtensionManifest>
