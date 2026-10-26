@@ -9,6 +9,9 @@ project record; their times are approximate and marked `~`.
 
 ## 2026-10-26
 
+- `[2026-10-26 13:32]` `[OpenCode / DeepSeek V4.1 Flash]` **[prompt 5, step G]** recorded that prompts 1–5 are all closed and that only manual in-app checklists remain, at the top of "Next 3 concrete actions" — `HANDOFF.md` — result: a fresh session no longer has to infer status.
+- `[2026-10-26 13:31]` `[OpenCode / DeepSeek V4.1 Flash]` **[prompt 5, step G]** added the closeout row to the Prompt 5 table and rewrote the "Current part" note so it says plainly that no prompt has an `IN PROGRESS` step and the only remaining work is the in-app checklists — `PROGRESS.md` (gitignored) — result: checklist matches reality.
+- `[2026-10-26 13:30]` `[OpenCode / DeepSeek V4.1 Flash]` **[prompt 5, step F closeout]** flipped the prompt's own status header from `IN PROGRESS` to `DONE` with the evidence (both suites green, commit `5e0d28e`, all four JS files parse), after a full start-of-session verification found the tree clean, no `git diff`, 34 static + 75 host checks passing and no stray `TODO`/half-written code anywhere in `host/`, `extension/`, `design/`, `scripts/`, `tests/` — `prompts/PROMPT_5.md` — result: no `IN PROGRESS` markers left in the repo; docs-only change, no source touched.
 - `[2026-10-26 13:25]` `[Freebuff / MiMo v2.6 Flash]` **[prompt 5, step F]** committed everything as `add handoff system` — all handoff files — result: OK.
 - `[2026-10-26 13:24]` `[Freebuff / MiMo v2.6 Flash]` **[prompt 5, step B]** rewrote `PROGRESS.md` as a per-prompt master checklist (DONE / IN PROGRESS / TODO, verified against code) — `PROGRESS.md` — result: statuses match the suites (34 static / 75 host tests pass).
 - `[2026-10-26 13:23]` `[Freebuff / MiMo v2.6 Flash]` **[prompt 5, step E]** wrote standing rules for any AI agent — `AGENTS.md` — result: created.

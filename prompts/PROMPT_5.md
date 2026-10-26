@@ -1,7 +1,11 @@
 # PROMPT 5 — multi-tool handoff system (AGENTS/PROGRESS/HANDOFF/WORKLOG/prompts)
 
-**STATUS: IN PROGRESS** (this prompt; being executed by the session that wrote
-this file)
+**STATUS: DONE** (file/docs only — no source code touched, as required).
+Verified 2026-10-26 against the code: steps 0/A–F all present; `AGENTS.md`,
+`HANDOFF.md`, `WORKLOG.md`, `prompts/PROMPT_1..5.md` committed in `5e0d28e
+"add handoff system"`; `PROGRESS.md` rebuilt as the per-prompt master
+checklist (gitignored, by design); both suites re-run green (34 static / 75
+host); `node --check` clean on all four JS files including the host copy.
 
 **Provenance:** Current chat session, given directly. Verbatim text preserved
 below word for word.

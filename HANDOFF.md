@@ -153,6 +153,10 @@ Real-app verification = walk `docs/manual-test-checklist-part4.md` (and parts
 
 ## 7. Next 3 concrete actions
 
+0. **Status as of 2026-10-26 13:30 — no code work is outstanding.** Prompts 1–5
+   are all `DONE` in `PROGRESS.md` and in `prompts/PROMPT_N.md`; every automated
+   check is green. What is left is manual, and needs a human in the apps.
+
 1. **Run `docs/manual-test-checklist-part4.md` in After Effects 26.5** — the
    connection fix, preset capture/apply, import/export dialogs and undo
    granularity are all `UNTESTED` until then. Report results into
