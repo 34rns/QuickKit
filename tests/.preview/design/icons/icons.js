@@ -57,7 +57,33 @@
       '<path d="M6 2.7v3.1"/>' +
       '<path d="M10 2.7v3.1"/>' +
       '<path d="M4.4 5.8h7.2v2.3a3.6 3.6 0 0 1-7.2 0Z"/>' +
-      '<path d="M8 11.7v1.6"/>'
+      '<path d="M8 11.7v1.6"/>',
+    library:
+      '<path d="M2.6 3.2h3.2v9.6H2.6Z"/>' +
+      '<path d="M7.2 3.2h3.2v9.6H7.2Z"/>' +
+      '<path d="M11.6 4.1 13.7 4l1 8.7-2.1.2Z"/>',
+    folder:
+      '<path d="M2.4 4.6h4.2l1.4 1.6h5.6v6.2H2.4Z"/>',
+    grid:
+      '<rect x="2.6" y="2.6" width="4.6" height="4.6" rx="1"/>' +
+      '<rect x="8.8" y="2.6" width="4.6" height="4.6" rx="1"/>' +
+      '<rect x="2.6" y="8.8" width="4.6" height="4.6" rx="1"/>' +
+      '<rect x="8.8" y="8.8" width="4.6" height="4.6" rx="1"/>',
+    list:
+      '<path d="M3 4.2h10"/>' +
+      '<path d="M3 8h10"/>' +
+      '<path d="M3 11.8h10"/>',
+    star:
+      '<path d="M8 2.8 9.6 6.2l3.7.5-2.7 2.6.7 3.7L8 11.2l-3.3 1.8.7-3.7L2.7 6.7l3.7-.5Z"/>',
+    trash:
+      '<path d="M3.4 4.8h9.2"/>' +
+      '<path d="M6.4 4.8V3.2h3.2v1.6"/>' +
+      '<path d="M4.6 4.8l.7 8h5.4l.7-8"/>',
+    wrench:
+      '<path d="M10.3 2.9a3.1 3.1 0 0 0-3.6 4.4l-4 4a1.4 1.4 0 0 0 2 2l4-4a3.1 3.1 0 0 0 4.4-3.6l-1.9 1.9-1.7-.4-.4-1.7Z"/>',
+    plus:
+      '<path d="M8 3.4v9.2"/>' +
+      '<path d="M3.4 8h9.2"/>'
   };
 
   function svg(name, size, extraClass) {

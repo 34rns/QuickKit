@@ -1,24 +1,29 @@
 # QuickKit
 
 A free, local-only panel for **Adobe After Effects** and **Adobe Premiere Pro**
-on Windows 10 and 11. One extension, seven tools, no account, no cloud, no
+on Windows 10 and 11. One extension, eight tools, no account, no cloud, no
 tracking.
 
-Version **0.6.0** — Part 6: a Bridge tab moves clips to After Effects and the
-render back to the same Premiere timeline position, as files. It joins the live
-After Effects tools (anchor, text, layers, easing, presets), the Premiere
-silence cutter, and the Part 1 shell, host test and installer.
+Version **0.7.0** — Part 6A: one shared **Library** for both apps, with nested
+folders, smart collections, search, `.qkpack` sharing and a Repair button. It
+joins the live After Effects tools (anchor, text, layers, easing, presets), the
+Premiere silence cutter, the Bridge, and the Part 1 shell, host test and
+installer.
 
 ---
 
 ## What works in this version
 
 - One CEP extension loads in **both** apps from a single manifest.
-- Seven tabs: Anchor, Presets, Text, Easing, Layers, Silence, Bridge.
+- Eight tabs: Anchor, Presets, Library, Text, Easing, Layers, Silence, Bridge.
 - Tabs that do not apply to the app you are in say **"Available in Premiere
   Pro"** or **"Available in After Effects"** instead of disappearing.
 - A **Presets** library with folders, search, favourites, drag reordering,
   pack import/export and 15 original starters — all stored on your PC.
+- A **Library** shared by both apps: presets, MOGRTs and Premiere recipes in
+  nested folders, with smart collections, instant search, filters, grid/list
+  views, `.qkpack` export/import and a Repair button. Part 4 presets are
+  imported automatically the first time it opens.
 - A **Silence cutter** for Premiere Pro: FFmpeg finds the gaps in the sequence
   audio, you check them on a waveform, then cut them out in one undo step.
 - A **Bridge** between the two apps: send selected Premiere clips to After
@@ -110,6 +115,46 @@ and renames duplicates instead of overwriting anything.
 They are seeded on first run; delete them all to see the empty state.
 - A damaged preset file is skipped with a note under the list; the panel keeps
 working and never crashes on it.
+
+---
+
+## Library (both apps)
+
+One library shared by After Effects and Premiere Pro, opened from the
+**Library** tab. Everything is a plain folder on your disk —
+`%APPDATA%\QuickKit\library` — with `library.json` as the index and one folder
+per item holding `item.json`, the asset and any previews.
+
+- **Item types:** After Effects presets (`.ffx` or a QuickKit recipe), MOGRTs,
+  Premiere recipes and packs. Each item records its name, type, category, tags,
+  favourite, which app(s) it works in, when it was added, how often and when it
+  was last used, author, licence and notes.
+- **First run migrates your Part 4 presets.** They keep their ids, so the
+  Presets tab keeps working. The old `%APPDATA%\QuickKit\presets` store is left
+  exactly as it was; a damaged preset file is skipped and reported.
+- **Nested folders.** Create, rename, move and delete; drag items or folders
+  onto a folder. Deleting a folder never deletes items — they move up one level.
+- **Smart collections:** All items, Favorites, Recently used, Most used,
+  Untagged, Text, Transitions, Shapes, each with a live count.
+- **Search and filters.** Search covers name, tags, category, notes, author and
+  type; filter by type, app and category; sort by name, date or usage.
+- **Grid or list view**, with a thumbnail size slider that is remembered.
+- **Multi-select, context menu and shortcuts:** click / Ctrl+click /
+  Shift+click, right-click for the item or folder menu, `Delete` to remove,
+  `F2` to rename, `Enter` for details, `Ctrl+F` for search.
+- **Dimmed items.** Items that do not work in the app you are in are dimmed with
+  a tooltip; they stay in the library for the other app.
+- **Share with `.qkpack`.** Export the selection or the folder you are in to one
+  zip file (manifest + assets) and import it elsewhere with **skip**, **replace**
+  or **keep both**. No dependency and no network: the zip is written by QuickKit
+  itself and any zip tool can open it.
+- **Nothing fatal.** A corrupt `library.json` is rebuilt from the item folders
+  on load; a missing asset is a badge on the card, not a crash. **Repair
+  library** rebuilds the index on demand and never deletes an item.
+
+Applying an item to a timeline or layer is **not built yet** — 6A is the store
+and the UI. Saving from the apps and applying (including `.ffx` and `.mogrt`
+handling) arrives in the next parts.
 
 ---
 
@@ -405,10 +450,21 @@ QuickKit/
   CSXS\manifest.xml
   index.html
   css\panel.css
-  js\panel.js, js\csinterface-lite.js, js\ffmpeg-node.js
+  js\panel.js, js\csinterface-lite.js, js\library-core.js, js\library-io.js,
+    js\ffmpeg-node.js, js\render-node.js
   design\tokens.css, design\fonts\, design\icons\
   host\quickkit.jsx
   bin\ffmpeg\ffmpeg.exe, bin\ffmpeg\NOTICE.txt
+```
+
+Your own data never goes in the extension folder:
+
+```
+%APPDATA%\QuickKit\
+  library\          library.json, folders.json, items\<id>\item.json + assets
+  presets\          the Part 4 preset store (still read and written by the
+                    Presets tab; untouched by the library migration)
+  bridge\           handoff files, renders and returns for the Bridge tab
 ```
 
 ---
@@ -422,6 +478,13 @@ QuickKit/
   mock Premiere world; not the real apps).
 - FFmpeg tests: `node tests/ffmpeg.test.js` (runs the real binary when one is
   present and skips the real-run checks when it is not).
+- Bridge render tests: `node tests/render.test.js` (uses the real `aerender.exe`
+  when After Effects is installed; the success path is still manual).
+- Library tests: `node tests/library.test.js` (real temp folders: schema files,
+  Part 4 migration, folders, corrupt-index repair, packs, conflict modes).
+- Browser preview: `node tests/refresh-preview.js` then open
+  `tests/.preview/index.html` (append `?host=PPRO` for the Premiere side) — a
+  fake CEP harness, not shipped.
 - Chrome/CEF in CEP 12 is Chromium 99, so avoid newer CSS
   (`color-mix`, `:has`, container queries).
 - `host/quickkit.jsx` runs as ExtendScript, which is ES3: no `const`, `let`,
@@ -431,7 +494,9 @@ QuickKit/
   `docs/manual-test-checklist-part2.md`,
   `docs/manual-test-checklist-part3.md`,
   `docs/manual-test-checklist-part4.md`,
-  `docs/manual-test-checklist-part5.md`.
+  `docs/manual-test-checklist-part5.md`,
+  `docs/manual-test-checklist-part6.md`,
+  `docs/manual-test-checklist-part6a.md`.
 
 ---
 

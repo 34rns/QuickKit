@@ -303,6 +303,233 @@
     }, 8);
   }
 
+  /* ---------------------------------------------------------- fake library
+     In-memory stand-in for extension/js/library-io.js so the Library tab can
+     be exercised in a browser. Same shape of return values; no disk. */
+
+  var libRoot = "C:/Users/Test/AppData/Roaming/QuickKit/library";
+  var libFolders = [
+    { id: "f-titles", name: "Titles", parentId: "", order: 1 },
+    { id: "f-lower", name: "Lower thirds", parentId: "f-titles", order: 1 },
+    { id: "f-motion", name: "Motion", parentId: "", order: 2 },
+    { id: "f-trans", name: "Transitions", parentId: "", order: 3 },
+    { id: "f-archive", name: "Archive", parentId: "", order: 4 }
+  ];
+
+  function libItem(id, name, type, category, tags, folderId, extra) {
+    var base = {
+      id: id,
+      name: name,
+      type: type,
+      category: category,
+      tags: tags,
+      folderId: folderId,
+      author: "You",
+      license: "",
+      notes: "",
+      createdAt: "2026-10-2" + (id.length % 8) + " 10:00:00",
+      usageCount: 0,
+      lastUsed: ""
+    };
+    for (var key in extra || {}) {
+      if (Object.prototype.hasOwnProperty.call(extra, key)) base[key] = extra[key];
+    }
+    return base;
+  }
+
+  var libItems = [
+    libItem("l1", "Glow title", "ae-preset", "Titles", ["intro", "glow"], "f-titles", { favorite: true, usageCount: 12, lastUsed: "2026-10-25 18:20:00" }),
+    libItem("l2", "Type on", "ae-preset", "Titles", ["text", "typewriter"], "f-titles", { usageCount: 4, lastUsed: "2026-10-24 11:00:00" }),
+    libItem("l3", "Lower third bar", "ae-preset", "Lower thirds", ["lower third", "clean"], "f-lower", { usageCount: 9, lastUsed: "2026-10-26 09:10:00" }),
+    libItem("l4", "Wipe left", "ae-preset", "Transitions", ["transition", "wipe"], "f-trans"),
+    libItem("l5", "Slide up", "ae-preset", "Transitions", ["transition", "slide"], "f-trans"),
+    libItem("l6", "Soft push", "ae-preset", "Motion", ["move", "slow"], "f-motion", { usageCount: 2, lastUsed: "2026-10-22 16:00:00" }),
+    libItem("l7", "Punch in", "ae-preset", "Motion", ["move", "fast"], "f-motion"),
+    libItem("l8", "Circle burst", "ae-preset", "Shapes", ["shape", "circle"], "", { favorite: true }),
+    libItem("l9", "Title card", "mogrt", "Titles", ["title", "mogrt"], "f-titles", { previewThumb: "thumb.png" }),
+    libItem("l10", "Logo sting", "mogrt", "Brand", ["logo", "intro"], "", { usageCount: 6, lastUsed: "2026-10-23 14:05:00" }),
+    libItem("l11", "Caption pop", "pr-recipe", "Captions", ["caption", "text"], ""),
+    libItem("l12", "Zoom transition", "pr-recipe", "Transitions", ["transition", "zoom"], "f-trans", { usageCount: 3, lastUsed: "2026-10-25 08:00:00" }),
+    libItem("l13", "Shape wipe", "pr-recipe", "Shapes", ["shape", "mask"], ""),
+    libItem("l14", "Team pack", "pack", "Brand", ["pack", "brand"], "f-archive")
+  ];
+
+  var libMissing = ["l7"];
+
+  /* ?empty=1 proves the first-run empty state without touching the seeds. */
+  if (query.indexOf("empty=1") !== -1) {
+    libItems = [];
+    libMissing = [];
+  }
+
+  function libNormalized() {
+    var core = window.QKLibraryCore;
+    return core.normalizeIndex({ schemaVersion: 1, folders: libFolders, items: libItems });
+  }
+
+  function libRemember(index) {
+    libFolders = index.folders;
+    libItems = index.items;
+  }
+
+  function libReply(index, extra) {
+    var reply = {
+      ok: true,
+      root: libRoot,
+      index: index,
+      missing: libMissing.slice(0),
+      status: { created: false, repaired: false, newer: false, migrated: null, skipped: [] }
+    };
+    for (var key in extra || {}) {
+      if (Object.prototype.hasOwnProperty.call(extra, key)) reply[key] = extra[key];
+    }
+    return reply;
+  }
+
+  function libChange(change) {
+    var core = window.QKLibraryCore;
+    var index = libNormalized();
+    var result = change(index, core) || {};
+    if (result.error) {
+      result.ok = false;
+      return result;
+    }
+    libRemember(index);
+    return libReply(index, result);
+  }
+
+  window.QKFakeLibrary = {
+    load: function () {
+      var index = libNormalized();
+      return libReply(index, {
+        status: {
+          created: false,
+          repaired: false,
+          newer: false,
+          migrated: { from: "presets", at: "2026-10-26 10:00", count: 9, skippedCount: 1 },
+          skipped: []
+        }
+      });
+    },
+    repair: function () {
+      var index = libNormalized();
+      return libReply(index, { skipped: [], missingAssets: libMissing.length });
+    },
+    folderCreate: function (payload) {
+      return libChange(function (index, core) {
+        return core.folderCreate(index, payload || {});
+      });
+    },
+    folderRename: function (payload) {
+      return libChange(function (index, core) {
+        return core.folderRename(index, payload || {});
+      });
+    },
+    folderMove: function (payload) {
+      return libChange(function (index, core) {
+        return core.folderMove(index, payload || {});
+      });
+    },
+    folderDelete: function (payload) {
+      return libChange(function (index, core) {
+        return core.folderDelete(index, payload || {});
+      });
+    },
+    itemUpdate: function (payload) {
+      return libChange(function (index, core) {
+        return core.itemUpdate(index, payload || {});
+      });
+    },
+    itemsMove: function (payload) {
+      return libChange(function (index, core) {
+        return core.itemsMove(index, payload || {});
+      });
+    },
+    itemsDelete: function (payload) {
+      return libChange(function (index, core) {
+        return core.itemsDelete(index, payload || {});
+      });
+    },
+    touch: function (id) {
+      return libChange(function (index, core) {
+        return core.touchItem(index, id);
+      });
+    },
+    exportPack: function (payload) {
+      return {
+        ok: true,
+        path: "C:/Users/Test/Desktop/QuickKit pack.qkpack",
+        name: (payload && payload.name) || "QuickKit pack",
+        count: (payload && payload.ids ? payload.ids.length : 0),
+        skipped: [],
+        bytes: 4096
+      };
+    },
+    inspectPack: function () {
+      return {
+        ok: true,
+        path: "C:/Users/Test/Desktop/QuickKit pack.qkpack",
+        name: "Shared looks",
+        createdAt: "2026-10-24 09:12",
+        count: 3,
+        names: ["Glow title", "Soft push", "Title card"]
+      };
+    },
+    importPack: function (payload) {
+      var mode = (payload && payload.mode) || "skip";
+      var counts = { added: 0, replaced: 0, renamed: 0, skipped: 0 };
+      var index = libNormalized();
+      var core = window.QKLibraryCore;
+      var incoming = [
+        core.normalizeItem({ id: "l1", name: "Glow title", type: "ae-preset", tags: ["intro"] }),
+        core.normalizeItem({ id: "px2", name: "Soft push", type: "ae-preset" }),
+        core.normalizeItem({ id: "px3", name: "Title card", type: "mogrt" })
+      ];
+      var decisions = core.planImport(index, incoming, mode);
+      counts = core.applyImport(index, decisions, [], mode);
+      libRemember(index);
+      return libReply(index, {
+        counts: counts,
+        mode: mode,
+        wrote: counts.added + counts.replaced + counts.renamed,
+        failed: [],
+        unreadable: [],
+        pack: "Shared looks",
+        message:
+          "Added " + counts.added + ", replaced " + counts.replaced + ", kept both " + counts.renamed + ", skipped " + counts.skipped + "."
+      });
+    },
+    itemAdd: function () {
+      return { ok: false, error: "The preview library cannot add files." };
+    },
+    itemDirectory: function () {
+      return "";
+    },
+    itemFileUrl: function () {
+      /* Deliberately undecodable, so the card must fall back to its type
+         glyph. A file:// URL would be blocked by the browser and fill the
+         console; this fails quietly in the <img> only. */
+      return "data:image/png;base64,Qk9ndXM=";
+    },
+    itemAssetUrl: function () {
+      return "";
+    },
+    rootUrl: function () {
+      return "";
+    }
+  };
+
+  window.cep = {
+    fs: {
+      showSaveDialogEx: function () {
+        return { err: 0, data: "C:/Users/Test/Desktop/QuickKit pack.qkpack" };
+      },
+      showOpenDialogEx: function () {
+        return { err: 0, data: ["C:/Users/Test/Desktop/Shared looks.qkpack"] };
+      }
+    }
+  };
+
   window.__fakeCalls = [];
   window.__adobe_cep__ = {
     getHostEnvironment: function () {

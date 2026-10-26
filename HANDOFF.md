@@ -1,8 +1,8 @@
 # HANDOFF — QuickKit
 
 **Read this together with `AGENTS.md`, `PROGRESS.md`, `WORKLOG.md` and the
-relevant `prompts/PROMPT_N.md`.** Last updated: 2026-10-26 (Prompt 7 → Part 6,
-Bridge between Premiere Pro and After Effects).
+relevant `prompts/PROMPT_N.md`.** Last updated: 2026-10-26 (Prompt 8 → Part 6A,
+the unified library: store, folders, packs, Repair).
 
 ---
 
@@ -12,10 +12,11 @@ QuickKit is a **free, local-only CEP extension** for Adobe After Effects and
 Premiere Pro: an HTML/JS panel plus an ExtendScript (`.jsx`) host, one manifest
 targeting both apps, Windows 10/11 only, no network at runtime.
 
-Current version: **0.6.0** (Parts 0–6 done: shell, AE core tools, text
+Current version: **0.7.0** (Parts 0–6 and 6A done: shell, AE core tools, text
 animations, preset manager, Premiere silence cutter, Premiere ⇄ After Effects
-bridge). Everything that touches the real app is still `UNTESTED` until the
-manual checklists in `docs/` are walked through.
+bridge, unified library store/UI). 6A stores and organises items but does not
+apply them yet. Everything that touches the real app is still `UNTESTED` until
+the manual checklists in `docs/` are walked through.
 
 ## 2. Architecture
 
@@ -30,6 +31,10 @@ manual checklists in `docs/` are walked through.
       js/ffmpeg-node.js ──spawn(argv, no shell)──► bin/ffmpeg/ffmpeg.exe      (Silence tab)
       js/render-node.js ──spawn(argv, no shell)──► …\Adobe After Effects 2026\Support Files\aerender.exe
                                                                               (Bridge render)
+               │ require() + fs / zlib  (no child process)
+               ▼
+      js/library-io.js ──read/write──► %APPDATA%\QuickKit\library\          (Library tab)
+      (rules live in js/library-core.js, a plain <script> load)
 ```
 
 **Bridge file handoff** (`%APPDATA%\QuickKit\bridge\`):
@@ -69,6 +74,13 @@ returns\<id>.qkreturn    AE writes     →  Premiere's Place button (then moves 
   Every bridge entry point returns `{ok, steps:[{id,label,state,detail}], …}`
   so the same list is used for the panel readout and the failure message. No
   host call ever claims the other app did something it did not.
+- **Library (Part 6A):** two files, deliberately split. `library-core.js` is a
+  plain `<script>` (no Node, no DOM) holding the schema, folder/item rules,
+  query, migration, repair and pack planning; it runs in CEP, in Node tests and
+  in the browser preview unchanged. `library-io.js` is `require()`d from the
+  panel and owns all disk work (`fs`, a hand-written zip via `zlib`) plus the
+  public `load/repair/…/importPack` calls. The ExtendScript host does **not**
+  touch the library: binary-safe `.mogrt`/pack copying is impossible there.
 
 ## 3. File map
 
@@ -81,14 +93,16 @@ returns\<id>.qkreturn    AE writes     →  Premiere's Place button (then moves 
 | `WORKLOG.md` | Reverse-chronological journal, one line per edit/step. |
 | `prompts/PROMPT_N.md` | Verbatim prompt archive with status headers. |
 | `README.md` | Public-facing docs: what works, install (3 steps), troubleshooting, privacy. |
-| `extension/CSXS/manifest.xml` | One manifest, `HostList` = AEFT + PPRO, `[22.0,99.9]`, version 0.6.0, CEF `--enable-nodejs` + `--mixed-context`. |
-| `extension/index.html` | Panel markup: header, host block, 7 tabs, one `<section>` per tool (incl. `#qk-panel-bridge`), dialogs, tooltip, status strip. |
-| `extension/js/panel.js` | All panel logic (~3050 lines): tabs, tooltips, welcome, per-tool wiring, presets UI, WAAPI text preview, silence tab, bridge tab. |
+| `extension/CSXS/manifest.xml` | One manifest, `HostList` = AEFT + PPRO, `[22.0,99.9]`, version 0.7.0, CEF `--enable-nodejs` + `--mixed-context`. |
+| `extension/index.html` | Panel markup: header, host block, 8 tabs, one `<section>` per tool (incl. `#qk-panel-library`), the library context menu, dialogs, tooltip, status strip. |
+| `extension/js/panel.js` | All panel logic (~5400 lines): tabs, tooltips, welcome, per-tool wiring, presets UI, WAAPI text preview, silence tab, bridge tab, library UI. |
 | `extension/js/csinterface-lite.js` | The bridge (`window.__qk.call`). |
+| `extension/js/library-core.js` | Library rules, no dependencies: schema/normalisation, nested folders, search/filter/sort, smart collections, Part 4 migration, repair-from-disk, pack manifest/import planning. Loaded as a plain `<script>`. |
+| `extension/js/library-io.js` | Library store, `require()`d only: fs adapter (atomic writes), CRC32 + zip writer/reader, `create({root, legacyRoot})` → `load`, `repair`, folder/item CRUD, `touch`, `exportPack`, `inspectPack`, `importPack`. Never a process. |
 | `extension/js/ffmpeg-node.js` | Node side of the Silence tool: `locate`, `probe`, `detect`, `peaks`, `cancel`, parsers, `PeakBuilder`. One of two files that start a process. |
 | `extension/js/render-node.js` | Node side of the Bridge render: `locate`/`probe` for `aerender.exe`, `parseVersion`/`parseProgress`/`classifyFailure`, `spawnJob` (line streaming + `cancel()`), `render()`. Real output tested against `aerender 26.5x89`. |
 | `extension/css/panel.css` | Shell: grid, header, tabs, status, tooltip, welcome, dialogs. |
-| `extension/css/tools.css` | Tool panels: anchors, transforms, easing, text, presets, silence (waveform, progress, segment list), bridge (cards, lists, step dots), message strip. |
+| `extension/css/tools.css` | Tool panels: anchors, transforms, easing, text, presets, silence (waveform, progress, segment list), bridge (cards, lists, step dots), library (search, folder tree, cards, menu, dialog), message strip. |
 | `host/quickkit.jsx` | The entire host (~5780 lines): helpers, host info, anchor, layers, easing, text engine, preset store, Premiere silence cutter (`qkSilence*`), bridge (`qkBridge*`). Marked sections; `$.evalFile` split deliberately avoided. |
 | `bin/ffmpeg/` | `NOTICE.txt` + `README.txt` (tracked); `ffmpeg.exe`, `ffprobe.exe`, `VERSION.txt` fetched per machine and **gitignored**. |
 | `design/tokens.css` | 126 tokens: dark theme, single accent `#7C5CFF`. Only place raw colours/fonts/radii live. |
@@ -97,13 +111,15 @@ returns\<id>.qkreturn    AE writes     →  Premiere's Place button (then moves 
 | `design/fonts/*` | Bundled Inter (OFL), logged in `docs/ASSET_LICENSES.md`. |
 | `scripts/install.bat`, `scripts/uninstall.bat` | Copy/clean the extension folder, toggle `PlayerDebugMode`. |
 | `scripts/fetch-ffmpeg.ps1` | Copies a local `ffmpeg.exe` (and `ffprobe.exe`) into `bin\ffmpeg\`, writes `VERSION.txt` with the build string and the detected licence. |
-| `tests/check-static.js` | 75 static checks incl. the **ES3 reserved-word scan**, the no-network check, and the silence/ffmpeg/bridge/manifest assertions (bridge checks 23–27). |
+| `tests/check-static.js` | 96 static checks incl. the **ES3 reserved-word scan**, the no-network check, and the silence/ffmpeg/bridge/library/manifest assertions (bridge checks 23–27, library checks 28–31). |
 | `tests/host-logic.test.js` | 104 mock-host tests (mock AE object model, mock AE bridge project with render queue, **and** a mock Premiere world; no Adobe apps needed). |
 | `tests/render.test.js` | 12 checks against the real `aerender.exe`: version/progress parsing, `spawnJob` streaming + cancel, error classification, discovery, and the real error text for a bad project. Skips the real runs when AE is absent. |
 | `tests/ffmpeg.test.js` | 20 checks against the real `ffmpeg.exe`, including a generated WAV in a path with spaces and 中文; skips the real runs when no binary is found. |
-| `tests/.preview/` | Fake-CEP harness: `fake-cep.js` stubs `__qk.call` (AEFT by default, PPRO with `?host=PPRO`), including bridge stand-ins, plus a copy of the panel served on 127.0.0.1 for browser checks. |
+| `tests/library.test.js` | 18 checks on real temp folders: schema files, Part 4 migration (ids kept, damaged file skipped), item/folder CRUD, corrupt-index repair, missing assets, newer-schema refusal, pack round trip, skip/replace/keep-both, a PowerShell `Expand-Archive` proof, and hostile/truncated pack refusal. |
+| `tests/.preview/` | Fake-CEP harness: `fake-cep.js` stubs `__qk.call` (AEFT by default, PPRO with `?host=PPRO`), including bridge stand-ins and an in-memory `window.QKFakeLibrary` (14 items, 5 folders, one missing asset, `?empty=1` for the first-run state). |
 | `tests/refresh-preview.js` | Rebuilds `tests/.preview` from `extension/`, `design/tokens.css` and `design/icons/`, injecting the `fake-cep.js` script tag. Run it after any panel change. |
-| `docs/manual-test-checklist-part{1..6}.md` | Manual test lists for the real apps. |
+| `tests/.preview-server.js` | Test-only static server for `tests/.preview` (`node tests/.preview-server.js 8137`) so `file://` restrictions do not hide image/CSS bugs. |
+| `docs/manual-test-checklist-part{1..6}.md`, `docs/manual-test-checklist-part6a.md` | Manual test lists for the real apps. |
 | `docs/releasing.md`, `release.ps1`, `quickkit.zip` | Release flow and artifact. |
 
 ## 4. Key decisions and why
@@ -170,6 +186,16 @@ returns\<id>.qkreturn    AE writes     →  Premiere's Place button (then moves 
     when `premierepro` is in `BridgeTalk.getTargets()`; otherwise the
     `.qkreturn` waits in `returns\` and Premiere's **Place** button finishes
     it. The panel reports `placed` from the host reply, never assumed.
+17. **The library is split into rules and disk, with one writer** —
+    `library-core.js` holds the schema, folders, query, migration, repair and
+    pack planning and touches neither Node nor the DOM, so the same code runs
+    in CEP, in the Node tests and in the browser preview. `library-io.js` is
+    `require()`d and is the **only** thing that writes `library.json`: each
+    mutation re-reads the index, applies one change, writes it back atomically
+    (temp file + rename). The ExtendScript host never touches the library —
+    it cannot copy a `.mogrt` or a pack byte-safely. Packs are written by
+    QuickKit's own zip writer (`zlib` + CRC32) so there is no dependency and
+    any zip tool can still open the result.
 
 ## 5. Known bugs and gotchas
 
@@ -242,19 +268,53 @@ returns\<id>.qkreturn    AE writes     →  Premiere's Place button (then moves 
   `install.bat` if you want the Silence tab to work out of the box.
 - **`tests/.preview/` is committed** (fake-CEP harness); do not treat it as
   build junk.
+- **The library has never run inside CEP.** Everything in 6A was proven by
+  `tests/library.test.js` on real temp folders and by the browser preview —
+  not by After Effects or Premiere. Explicitly `UNTESTED`: `require()` of
+  `library-io.js` in CEP, `%APPDATA%` resolution there, the native Save/Open
+  dialogs (`window.cep.fs.showSaveDialogEx` / `showOpenDialogEx`),
+  `file://` thumbnails in Chromium 99, real-mouse drag and drop, and the
+  migration of the user's real Part 4 presets. Checklist:
+  `docs/manual-test-checklist-part6a.md`.
+- **The Part 4 preset store is never moved or rewritten.** Migration only
+  *copies* `presets\*.qkpreset` into the library and keeps the original id, so
+  `qkPresetApply(id)` still resolves the old file. Do not "clean up" the old
+  store; the Presets tab still reads it.
+- **`library.json` has exactly one writer.** Never edit it from the host or a
+  second panel code path: two writers would interleave read-modify-write and
+  drop items. Everything goes through `library-io.js`, and a stale in-memory
+  index is re-read on each mutation.
+- **A newer `schemaVersion` is refused, not downgraded.** `load()` still lists
+  the items, but every change returns *"This library was saved by a newer
+  QuickKit. Update QuickKit before changing it."* Never "fix" this by writing
+  the old schema over it.
+- **Repair never deletes.** `repair()` rebuilds `library.json` from
+  `items\*\item.json` and `folders.json`; a damaged item folder is skipped and
+  left untouched. Do not add a cleanup pass that removes files it does not
+  understand.
+- **Packs are untrusted input.** The reader refuses path traversal, caps entry
+  sizes and total size, and validates the manifest. Keep those guards when
+  touching the zip code — the tests include hostile and truncated packs.
+- **Library preview evidence is browser-only.** The fake library in
+  `tests/.preview/fake-cep.js` (14 items, 5 folders, one missing asset,
+  `?empty=1`) proves the wiring. It is not a model of the real store; a real
+  difference belongs in `library-core.js` **and** the fake together.
 
 ## 6. How to run and test
 
 ```bash
-# automated — all four must pass, exit 0
-node tests/check-static.js        # 75 checks: structure, versions, ES3 scan, no-network, silence + bridge wiring
+# automated — all five must pass, exit 0
+node tests/check-static.js        # 96 checks: structure, versions, ES3 scan, no-network, silence + bridge + library wiring
 node tests/host-logic.test.js     # 104 mock-host tests (mock AE, mock AE bridge, mock Premiere), no apps needed
 node tests/render.test.js         # 12 checks against the real aerender.exe (skips real runs if AE absent)
 node tests/ffmpeg.test.js         # 20 checks against the real ffmpeg (skips real runs if absent)
+node tests/library.test.js        # 18 checks on real temp folders: schema, migration, repair, packs
 
 # syntax spot-check (copy first — Node rejects .jsx)
 cp host/quickkit.jsx /tmp/qk.js && node --check /tmp/qk.js
 node --check extension/js/panel.js
+node --check extension/js/library-core.js
+node --check extension/js/library-io.js
 node --check extension/js/ffmpeg-node.js
 node --check extension/js/render-node.js
 
@@ -264,37 +324,41 @@ cmd //c "scripts\\install.bat"    # then restart AE/PPro: Window > Extensions > 
 
 # browser preview of the panel with a fake host (no Adobe apps)
 node tests/refresh-preview.js                     # copies the panel into tests/.preview
-cd tests/.preview && python -m http.server 8752   # open http://127.0.0.1:8752/index.html
-# fake-cep.js stubs window.__qk.call; append ?host=PPRO for the Premiere side
+node tests/.preview-server.js 8137                # open http://127.0.0.1:8137/index.html
+# fake-cep.js stubs window.__qk.call; append ?host=PPRO for the Premiere side,
+# ?empty=1 for the library first-run state
 # (in a browser there is no Node, so the Silence and Bridge tabs say so — expected)
 ```
 
-Real-app verification = walk `docs/manual-test-checklist-part6.md` (bridge),
-`part5` (silence) and `part4` (presets), then parts 1–3. Report each item's
-number, expected result and what actually happened.
+Real-app verification = walk `docs/manual-test-checklist-part6a.md` (library),
+then `part6` (bridge), `part5` (silence) and `part4` (presets), then parts 1–3.
+Report each item's number, expected result and what actually happened.
 
 ## 7. Next 3 concrete actions
 
-0. **Status as of 2026-10-26 (Prompt 7 closeout) — no code work is
-   outstanding.** Prompts 1–7 are all `DONE` in `PROGRESS.md` and in
-   `prompts/PROMPT_N.md`; all four suites are green (75 / 104 / 12 / 20);
-   `scripts\install.bat` installed 0.6.0 and the panel was re-checked in the
-   browser preview in both host modes with no console messages. What is left is
-   manual, and needs a human in the apps.
+0. **Status as of 2026-10-26 (Prompt 8 closeout) — no code work is
+   outstanding.** Prompts 1–8 are all `DONE` in `PROGRESS.md` and in
+   `prompts/PROMPT_N.md`; all five suites are green (96 / 104 / 12 / 20 / 18);
+   `scripts\install.bat` installed **0.7.0** and the library UI was re-checked
+   in the browser preview in both host modes with no console messages. What is
+   left is manual, and needs a human in the apps. Part 6A is the store and the
+   UI only — **applying a library item is not built yet** (6B/6C).
 
-1. **Run `docs/manual-test-checklist-part6.md` (Bridge) with Premiere Pro
-   26.0.2 and After Effects 26.5 both open** — send a handoff from a real
-   sequence, import it in AE, render with `aerender`, place the render back on
-   the timeline. This is the newest and least proven area: every Premiere/AE
-   call in it is `UNTESTED`. Copy the outcome (and any timings) into this file.
-2. **Run `docs/manual-test-checklist-part5.md` (Silence) in Premiere Pro** —
-   the four required cases (short clip, one-hour clip, no silence, no audio)
-   plus multi-track, linked video and the unicode path; then
-   `part4` (presets) in After Effects if still unwalked.
-3. **If any item fails, fix one part at a time and re-run all four suites** —
+1. **Run `docs/manual-test-checklist-part6a.md` (Library) first** — it is the
+   newest and least proven area: `require()` in CEP, the real native dialogs,
+   `file://` thumbnails, real-mouse drag and drop, the migration of the user's
+   own Part 4 presets, and the whole panel in Premiere Pro. Copy the outcome
+   into this file and set the 6A rows in `PROGRESS.md` from `UNTESTED` to
+   tested only for the steps that actually passed.
+2. **Then run `docs/manual-test-checklist-part6.md` (Bridge) and `part5`
+   (Silence)**, then `part4` (presets) if still unwalked — the bridge and every
+   Premiere call in it are `UNTESTED`.
+3. **If any item fails, fix one part at a time and re-run all five suites** —
    for a host error start with `node tests/check-static.js` (a single
    ExtendScript reserved word silently kills every host function); for a
    razor/ripple difference change `qkSilence*` **and** the mock together; for a
    bridge difference change `qkBridge*` **and** `installAeBridge()` /
-   `createPremiereWorld({bridge:true})` together. Re-run `scripts\install.bat`
-   before the retest and record the real behaviour here.
+   `createPremiereWorld({bridge:true})` together; for a library difference
+   change `library-core.js` **and** `tests/library.test.js` /
+   `tests/.preview/fake-cep.js` together. Re-run `scripts\install.bat` before
+   the retest and record the real behaviour here.

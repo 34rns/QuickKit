@@ -200,6 +200,21 @@
   --qk-bridge-step-gutter: 14px;
   --qk-bridge-step-offset: 5px;
 
+  /* Library (Part 6A) */
+  --qk-lib-card-bg: var(--qk-surface);
+  --qk-lib-card-bg-hover: var(--qk-surface-raised);
+  --qk-lib-thumb-h: 64px;
+  --qk-lib-thumb-min: 72px;
+  --qk-lib-thumb-max: 176px;
+  --qk-lib-thumb-default: 112px;
+  --qk-lib-row-h: 34px;
+  --qk-lib-indent: 14px;
+  --qk-lib-menu-w: 176px;
+  --qk-lib-other-opacity: 0.42;
+  --qk-lib-drop-ring: 2px;
+  --qk-lib-scroll-max: 220px;
+  --qk-lib-gap: var(--qk-space-2);
+
   /* Layers */
   --qk-z-tooltip: 40;
   --qk-z-overlay: 30;

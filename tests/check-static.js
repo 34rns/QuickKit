@@ -192,7 +192,7 @@ if (Object.keys(ids).every(function (id) { return html.indexOf('id="' + id + '"'
 }
 
 /* 8. JavaScript syntax */
-["extension/js/csinterface-lite.js", "extension/js/panel.js", "design/icons/icons.js"].forEach(function (rel) {
+["extension/js/csinterface-lite.js", "extension/js/panel.js", "extension/js/library-core.js", "extension/js/library-io.js", "design/icons/icons.js"].forEach(function (rel) {
   if (!exists(rel)) return;
   try {
     execFileSync(process.execPath, ["--check", path.join(ROOT, rel)], { stdio: "pipe" });
@@ -672,6 +672,136 @@ else pass("README.md documents the bridge and its Dynamic Link limits");
 
 if (exists("tests/render.test.js")) pass("render test suite is present");
 else fail("tests/render.test.js is missing");
+
+/* 28. library engine and store (Part 6A) */
+var libPanel = /<section[^>]*id="qk-panel-library"[\s\S]*?<\/section>/.exec(html);
+var libCoreJs = exists("extension/js/library-core.js") ? read("extension/js/library-core.js") : "";
+var libIoJs = exists("extension/js/library-io.js") ? read("extension/js/library-io.js") : "";
+
+if (!libCoreJs) fail("extension/js/library-core.js is missing");
+else if (!libIoJs) fail("extension/js/library-io.js is missing");
+else pass("library engine and store are present");
+
+if (!libPanel) {
+  fail("library panel #qk-panel-library is missing");
+} else {
+  pass("library panel is present");
+
+  var libTab = /id:\s*"library",[\s\S]{0,260}?panelId:\s*"library"/.exec(panelJs);
+  if (!libTab) fail("panel.js library tab is not linked to panelId \"library\"");
+  else pass("library tab is linked to its panel element");
+
+  if (panelJs.indexOf('if (id === "library") libOnShow();') === -1) {
+    fail("selectTab never calls libOnShow()");
+  } else {
+    pass("selectTab refreshes the library when the tab opens");
+  }
+
+  if (!/bindLibrary\(\);/.test(panelJs)) fail("boot() never calls bindLibrary()");
+  else pass("boot() binds the library controls");
+
+  if (!/renderLibrary\(\);/.test(panelJs)) fail("boot() never renders the library");
+  else pass("boot() renders the library");
+
+  /* the engine is a page script; the store touches fs and must be require()d */
+  if (html.indexOf('<script src="js/library-core.js"></script>') === -1) {
+    fail("index.html does not load js/library-core.js as a page script");
+  } else {
+    pass("index.html loads the library engine");
+  }
+  if (html.indexOf("library-io.js") !== -1) fail("index.html loads library-io.js; it must only be require()d in CEP");
+  else pass("library-io.js is not loaded as a page script");
+  if (panelJs.indexOf("library-io.js") === -1) fail("panel.js never requires library-io.js");
+  else pass("panel.js requires library-io.js");
+  if (panelJs.indexOf("require(\"fs\")") !== -1) fail("panel.js requires fs; disk access belongs in library-io.js");
+  else pass("disk access stays inside library-io.js");
+
+  /* every control the library UI promises is in the markup */
+  var libControls = [
+    "qk-lib-search",
+    "qk-lib-type",
+    "qk-lib-host",
+    "qk-lib-category",
+    "qk-lib-sort",
+    "qk-lib-crumbs",
+    "qk-lib-collections",
+    "qk-lib-new-folder",
+    "qk-lib-folders",
+    "qk-lib-count",
+    "qk-lib-view-grid",
+    "qk-lib-view-list",
+    "qk-lib-thumb",
+    "qk-lib-items",
+    "qk-lib-empty",
+    "qk-lib-export",
+    "qk-lib-import",
+    "qk-lib-repair"
+  ];
+  var libMissingControls = libControls.filter(function (id) {
+    return libPanel[0].indexOf('id="' + id + '"') === -1;
+  });
+  if (libMissingControls.length) fail("library panel is missing: " + libMissingControls.join(", "));
+  else pass("library panel has all " + libControls.length + " controls (search, filters, folders, views, packs, repair)");
+
+  if (libPanel[0].indexOf("qk-lib-empty") === -1) fail("library panel has no empty state");
+  if (html.indexOf('id="qk-lib-dialog"') === -1) fail("index.html has no library dialog");
+  if (html.indexOf('id="qk-lib-menu"') === -1) fail("index.html has no library context menu");
+}
+
+/* 29. the library engine remembers the Part 4 preset ids */
+if (libCoreJs) {
+  ["migratePresets", "repair", "packManifest", "planImport", "applyImport", "query"].forEach(function (name) {
+    if (!new RegExp("function\\s+" + name + "\\s*\\(").test(libCoreJs)) fail("library-core.js is missing " + name + "()");
+  });
+  if (["migratePresets", "repair", "packManifest", "planImport", "applyImport", "query"].every(function (name) {
+    return new RegExp("function\\s+" + name + "\\s*\\(").test(libCoreJs);
+  })) {
+    pass("library-core.js has migration, repair, query and pack functions");
+  }
+
+  if (libCoreJs.indexOf("quickkit-library") === -1) fail("library-core.js does not name the library format");
+  else pass("library-core.js versions its index format");
+
+  if (!/schemaVersion/.test(libCoreJs)) fail("library-core.js has no schemaVersion");
+  else pass("library-core.js carries a schema version");
+}
+
+/* 30. every library id used by the panel exists in index.html */
+var libIdsUsed = {};
+panelJs.replace(/getElementById\("(qk-lib-[a-z0-9-]+)"\)/g, function (_, id) {
+  libIdsUsed[id] = true;
+  return _;
+});
+var libIdsMissing = Object.keys(libIdsUsed).filter(function (id) {
+  return html.indexOf('id="' + id + '"') === -1;
+});
+if (libIdsMissing.length) fail("panel.js uses library ids that index.html does not have: " + libIdsMissing.join(", "));
+else pass("all " + Object.keys(libIdsUsed).length + " library ids used by the panel exist in index.html");
+
+/* icons used only through the library helpers are not caught by section 6 */
+var libIcons = {};
+panelJs.replace(/libIconEl\("([a-z]+)"/g, function (_, name) {
+  libIcons[name] = true;
+  return _;
+});
+panelJs.replace(/if \(type === "[a-z-]+"\) return "([a-z]+)";/g, function (_, name) {
+  libIcons[name] = true;
+  return _;
+});
+var libIconsMissing = Object.keys(libIcons).filter(function (name) {
+  return !definedIcons[name];
+});
+if (libIconsMissing.length) fail("library uses icons that icons.js does not define: " + libIconsMissing.join(", "));
+else pass("all " + Object.keys(libIcons).length + " icons used by the library exist");
+
+/* 31. library tests and the manual checklist ship with the part */
+if (exists("tests/library.test.js")) pass("library test suite is present");
+else fail("tests/library.test.js is missing");
+if (exists("docs/manual-test-checklist-part6a.md")) pass("Part 6A manual checklist is present");
+else fail("docs/manual-test-checklist-part6a.md is missing");
+if (/library/i.test(readmeText) && /qkpack/i.test(readmeText)) pass("README documents the library and packs");
+else fail("README does not document the library and .qkpack packs");
+
 /* report */
 passes.forEach(function (message) { console.log("PASS  " + message); });
 skips.forEach(function (message) { console.log("SKIP  " + message); });

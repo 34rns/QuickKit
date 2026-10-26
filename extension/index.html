@@ -449,6 +449,99 @@
         </div>
       </section>
 
+      <section class="qk-panel qk-panel--library" id="qk-panel-library" data-panel="library" aria-label="Library" hidden>
+        <p class="qk-panel__lead">One library for both apps: presets, MOGRTs and recipes in nested folders, with packs you can share. Stored on this machine only.</p>
+
+        <div class="qk-lib-searchrow">
+          <label class="qk-lib-search">
+            <span class="qk-lib-search__label">Search</span>
+            <input class="qk-input" id="qk-lib-search" type="search" placeholder="Name, tag or note" autocomplete="off"
+                   data-tip="Search names, tags, notes and categories. Press Ctrl+F from anywhere in the library.">
+          </label>
+          <button type="button" class="qk-iconbtn" id="qk-lib-search-clear" data-icon="close"
+                  aria-label="Clear search" data-tip="Clear the search" hidden></button>
+        </div>
+
+        <div class="qk-lib-filters">
+          <label class="qk-field"><span class="qk-label">Type</span>
+            <select class="qk-select" id="qk-lib-type" data-tip="Show one kind of item">
+              <option value="all">All types</option>
+              <option value="ae-preset">After Effects preset</option>
+              <option value="mogrt">MOGRT</option>
+              <option value="pr-recipe">Premiere recipe</option>
+              <option value="pack">Pack</option>
+            </select>
+          </label>
+          <label class="qk-field"><span class="qk-label">App</span>
+            <select class="qk-select" id="qk-lib-host" data-tip="Show only items that work in one app">
+              <option value="all">Both apps</option>
+              <option value="AEFT">After Effects</option>
+              <option value="PPRO">Premiere Pro</option>
+            </select>
+          </label>
+          <label class="qk-field"><span class="qk-label">Category</span>
+            <select class="qk-select" id="qk-lib-category" data-tip="Categories come from the items in the library"></select>
+          </label>
+          <label class="qk-field"><span class="qk-label">Sort</span>
+            <select class="qk-select" id="qk-lib-sort" data-tip="Order of the items below">
+              <option value="name">Name</option>
+              <option value="date">Newest first</option>
+              <option value="usage">Most used</option>
+            </select>
+          </label>
+        </div>
+
+        <nav class="qk-lib-crumbs" id="qk-lib-crumbs" aria-label="Library path"></nav>
+
+        <div class="qk-lib-collections" id="qk-lib-collections" role="group" aria-label="Smart collections"></div>
+
+        <div class="qk-lib-folders-wrap">
+          <div class="qk-lib-folders-head">
+            <span class="qk-lib-folders-title">Folders</span>
+            <button type="button" class="qk-btn qk-btn--ghost qk-btn--xs" id="qk-lib-new-folder"
+                    data-tip="Create a folder; pick a parent folder first to nest it">New folder</button>
+          </div>
+          <div class="qk-lib-folders" id="qk-lib-folders" role="tree" aria-label="Library folders"></div>
+        </div>
+
+        <div class="qk-lib-viewbar">
+          <span class="qk-lib-count" id="qk-lib-count">0 items</span>
+          <div class="qk-lib-viewbtns" role="group" aria-label="View">
+            <button type="button" class="qk-lib-viewbtn" id="qk-lib-view-grid" aria-pressed="true"
+                    aria-label="Grid view" data-tip="Grid with thumbnails"></button>
+            <button type="button" class="qk-lib-viewbtn" id="qk-lib-view-list" aria-pressed="false"
+                    aria-label="List view" data-tip="Compact list"></button>
+          </div>
+          <label class="qk-lib-size" id="qk-lib-size-wrap">
+            <span class="qk-lib-size__label">Thumb</span>
+            <input class="qk-range" id="qk-lib-thumb" type="range" min="72" max="176" step="8" value="112"
+                   data-tip="Thumbnail size. List view uses the same width for the thumbnail.">
+          </label>
+        </div>
+
+        <div class="qk-lib-items is-grid" id="qk-lib-items" role="listbox" aria-multiselectable="true"
+             aria-label="Library items"></div>
+
+        <div class="qk-lib-empty" id="qk-lib-empty" hidden>
+          <div class="qk-lib-empty__mark" id="qk-lib-empty-mark" aria-hidden="true"></div>
+          <h2 class="qk-lib-empty__title" id="qk-lib-empty-title"></h2>
+          <p class="qk-lib-empty__body" id="qk-lib-empty-body"></p>
+          <div class="qk-lib-empty__actions" id="qk-lib-empty-actions"></div>
+        </div>
+
+        <p class="qk-lib-note" id="qk-lib-note" hidden></p>
+
+        <div class="qk-lib-foot">
+          <button type="button" class="qk-btn qk-btn--secondary qk-btn--xs" id="qk-lib-export"
+                  data-tip="Write the selection, or everything in view, to one .qkpack file">Export pack</button>
+          <button type="button" class="qk-btn qk-btn--secondary qk-btn--xs" id="qk-lib-import"
+                  data-tip="Add items from a .qkpack file, choosing what happens to duplicates">Import pack</button>
+          <button type="button" class="qk-btn qk-btn--ghost qk-btn--xs" id="qk-lib-repair"
+                  data-tip="Rebuild library.json from the item folders on disk. Nothing is deleted.">Repair library</button>
+        </div>
+        <p class="qk-panel__hint" id="qk-lib-path">Stored locally in %APPDATA%\QuickKit\library</p>
+      </section>
+
       <div id="qk-empty-slot" hidden></div>
     </main>
 
@@ -517,10 +610,29 @@
     </div>
   </div>
 
+  <div class="qk-lib-menu" id="qk-lib-menu" role="menu" aria-label="Item actions" hidden></div>
+
+  <div class="qk-overlay" id="qk-lib-dialog" hidden>
+    <div class="qk-dialog" role="dialog" aria-modal="true" aria-labelledby="qk-lib-dialog-title">
+      <div class="qk-dialog__head">
+        <h1 class="qk-dialog__title" id="qk-lib-dialog-title"></h1>
+        <button type="button" class="qk-iconbtn" id="qk-lib-dialog-close" data-icon="close"
+                aria-label="Close" data-tip="Close"></button>
+      </div>
+      <p class="qk-dialog__lead" id="qk-lib-dialog-lead" hidden></p>
+      <div class="qk-lib-dialog__body" id="qk-lib-dialog-body"></div>
+      <div class="qk-dialog__actions">
+        <button type="button" class="qk-btn qk-btn--ghost" id="qk-lib-dialog-cancel">Cancel</button>
+        <button type="button" class="qk-btn qk-btn--primary" id="qk-lib-dialog-ok">Save</button>
+      </div>
+    </div>
+  </div>
+
   <div class="qk-tooltip" id="qk-tooltip" role="tooltip" hidden></div>
 
   <script src="design/icons/icons.js"></script>
   <script src="js/csinterface-lite.js"></script>
+  <script src="js/library-core.js"></script>
   <script src="js/panel.js"></script>
 </body>
 </html>

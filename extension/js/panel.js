@@ -4,7 +4,7 @@
 (function (window, document) {
   "use strict";
 
-  var VERSION = "0.6.0";
+  var VERSION = "0.7.0";
   var WELCOME_KEY = "qk.welcome.v1";
   var HOST_TEST_TIMEOUT = 8000;
   var ACTION_TIMEOUT = 15000;
@@ -85,6 +85,15 @@
       panelId: "presets",
       body: "Save the selected layers as a reusable look and apply it in one click.",
       hostNote: "Presets apply layer and text properties inside After Effects."
+    },
+    {
+      id: "library",
+      label: "Library",
+      icon: "library",
+      host: null,
+      panelId: "library",
+      body: "One library for presets, MOGRTs and recipes, with nested folders and packs.",
+      hostNote: "The library is shared by both apps; items for the other app are dimmed."
     },
     {
       id: "text",
@@ -251,9 +260,45 @@
     els.presetDialogCancel = document.getElementById("qk-preset-dialog-cancel");
     els.presetDialogClose = document.getElementById("qk-preset-dialog-close");
 
+    els.libSearch = document.getElementById("qk-lib-search");
+    els.libSearchClear = document.getElementById("qk-lib-search-clear");
+    els.libType = document.getElementById("qk-lib-type");
+    els.libHost = document.getElementById("qk-lib-host");
+    els.libCategory = document.getElementById("qk-lib-category");
+    els.libSort = document.getElementById("qk-lib-sort");
+    els.libCrumbs = document.getElementById("qk-lib-crumbs");
+    els.libCollections = document.getElementById("qk-lib-collections");
+    els.libNewFolder = document.getElementById("qk-lib-new-folder");
+    els.libFolders = document.getElementById("qk-lib-folders");
+    els.libCount = document.getElementById("qk-lib-count");
+    els.libViewGrid = document.getElementById("qk-lib-view-grid");
+    els.libViewList = document.getElementById("qk-lib-view-list");
+    els.libSizeWrap = document.getElementById("qk-lib-size-wrap");
+    els.libThumb = document.getElementById("qk-lib-thumb");
+    els.libItems = document.getElementById("qk-lib-items");
+    els.libEmpty = document.getElementById("qk-lib-empty");
+    els.libEmptyMark = document.getElementById("qk-lib-empty-mark");
+    els.libEmptyTitle = document.getElementById("qk-lib-empty-title");
+    els.libEmptyBody = document.getElementById("qk-lib-empty-body");
+    els.libEmptyActions = document.getElementById("qk-lib-empty-actions");
+    els.libNote = document.getElementById("qk-lib-note");
+    els.libExport = document.getElementById("qk-lib-export");
+    els.libImport = document.getElementById("qk-lib-import");
+    els.libRepair = document.getElementById("qk-lib-repair");
+    els.libPath = document.getElementById("qk-lib-path");
+    els.libMenu = document.getElementById("qk-lib-menu");
+    els.libDialog = document.getElementById("qk-lib-dialog");
+    els.libDialogTitle = document.getElementById("qk-lib-dialog-title");
+    els.libDialogLead = document.getElementById("qk-lib-dialog-lead");
+    els.libDialogBody = document.getElementById("qk-lib-dialog-body");
+    els.libDialogOk = document.getElementById("qk-lib-dialog-ok");
+    els.libDialogCancel = document.getElementById("qk-lib-dialog-cancel");
+    els.libDialogClose = document.getElementById("qk-lib-dialog-close");
+
     els.panels = {
       anchor: document.getElementById("qk-panel-anchor"),
       presets: document.getElementById("qk-panel-presets"),
+      library: document.getElementById("qk-panel-library"),
       text: document.getElementById("qk-panel-text"),
       layers: document.getElementById("qk-panel-layers"),
       easing: document.getElementById("qk-panel-easing"),
@@ -276,9 +321,11 @@
     setEasingPreset("easy");
     setTextPreset("fade", false);
     bindPresets();
+    bindLibrary();
     bindSilence();
     bindBridge();
     renderPresets();
+    renderLibrary();
   }
 
   function fillStaticIcons() {
@@ -387,6 +434,7 @@
       if (state.hosted && !state.presetLoaded) loadPresets();
       else renderPresets();
     }
+    if (id === "library") libOnShow();
   }
 
   function renderContent() {
@@ -3616,6 +3664,1683 @@
 
     var refreshAe = document.getElementById("qk-bridge-refresh-aeft");
     if (refreshAe) refreshAe.addEventListener("click", bridgeRefresh);
+  }
+
+  /* ---------- library (Part 6A) ---------- */
+
+  var LIB_VIEW_KEY = "qk.library.view";
+  var LIB_THUMB_KEY = "qk.library.thumb";
+  var LIB_RENDER_MAX = 400;
+
+  var lib = {
+    api: null,
+    apiError: "",
+    loaded: false,
+    loading: false,
+    error: "",
+    index: null,
+    root: "",
+    missing: [],
+    status: null,
+    search: "",
+    collection: "all",
+    folderId: "",
+    type: "all",
+    host: "all",
+    category: "all",
+    sort: "name",
+    view: "grid",
+    thumb: 112,
+    selected: [],
+    anchor: "",
+    focusId: "",
+    dragIds: null,
+    menu: null,
+    dialog: null,
+    dialogError: null,
+    returnFocus: null,
+    note: ""
+  };
+
+  function libCore() {
+    return window.QKLibraryCore || null;
+  }
+
+  function libStore(key, value) {
+    try {
+      if (value === undefined) return window.localStorage.getItem(key);
+      window.localStorage.setItem(key, String(value));
+    } catch (eStore) {
+      /* storage can be blocked; the setting simply does not persist */
+    }
+    return null;
+  }
+
+  function libNode() {
+    try {
+      return (
+        typeof require === "function" &&
+        typeof process !== "undefined" &&
+        !!process.versions &&
+        !!process.versions.node
+      );
+    } catch (eNode) {
+      return false;
+    }
+  }
+
+  /* library-io.js is required from here, never loaded as a page script.
+     A browser preview can provide window.QKFakeLibrary instead. */
+  function libApiGet() {
+    if (lib.api) return lib.api;
+    if (lib.apiError) return null;
+    if (window.QKFakeLibrary) {
+      lib.api = window.QKFakeLibrary;
+      return lib.api;
+    }
+    if (!libNode()) {
+      lib.apiError =
+        "The library is a folder on your disk, so it needs the panel opened from Window > Extensions inside After Effects or Premiere Pro.";
+      return null;
+    }
+
+    var api = window.CSInterfaceLite;
+    var root = api && api.getSystemPath ? String(api.getSystemPath("extension") || "") : "";
+    var path = null;
+    try {
+      path = require("path");
+    } catch (ePath) {
+      path = null;
+    }
+
+    try {
+      root = root.replace(/^file:\/\/\//i, "").replace(/^file:\/\//i, "");
+      try {
+        root = decodeURIComponent(root);
+      } catch (eDecode) {}
+      var file = root && path ? path.join(root, "js", "library-io.js") : "./js/library-io.js";
+      lib.api = require(file).create({});
+      return lib.api;
+    } catch (eLoad) {
+      lib.apiError =
+        "Could not load the library helper: " + (eLoad && eLoad.message ? eLoad.message : eLoad);
+      return null;
+    }
+  }
+
+  function libOnShow() {
+    if (!lib.loaded && !lib.loading) libRefresh();
+    else renderLibrary();
+  }
+
+  function libRefresh() {
+    if (lib.loading) return;
+    var api = libApiGet();
+    if (!api) {
+      lib.loaded = true;
+      lib.error = lib.apiError;
+      renderLibrary();
+      return;
+    }
+
+    lib.loading = true;
+    try {
+      var result = api.load();
+      if (!result || !result.ok) {
+        lib.error = (result && result.error) || "The library could not be opened.";
+      } else {
+        var first = !lib.loaded;
+        lib.error = "";
+        lib.index = result.index;
+        lib.root = result.root || lib.root;
+        lib.missing = result.missing || [];
+        lib.status = result.status || null;
+        if (first && lib.status && lib.status.migrated && lib.status.migrated.count) {
+          var migrated = lib.status.migrated;
+          lib.note =
+            "Imported " +
+            migrated.count +
+            " saved presets into the library." +
+            (migrated.skippedCount ? " " + migrated.skippedCount + " damaged preset file(s) were left alone." : "");
+        }
+      }
+    } catch (eLoad) {
+      lib.error = "The library could not be read: " + (eLoad && eLoad.message ? eLoad.message : eLoad);
+    }
+
+    lib.loading = false;
+    lib.loaded = true;
+    libPruneSelection();
+    renderLibrary();
+  }
+
+  function libPruneSelection() {
+    if (!lib.index) {
+      lib.selected = [];
+      lib.anchor = "";
+      lib.focusId = "";
+      return;
+    }
+    var keep = [];
+    for (var i = 0; i < lib.selected.length; i++) {
+      if (window.QKLibraryCore.itemById(lib.index, lib.selected[i])) keep.push(lib.selected[i]);
+    }
+    lib.selected = keep;
+    if (lib.anchor && !window.QKLibraryCore.itemById(lib.index, lib.anchor)) lib.anchor = "";
+    if (lib.focusId && !window.QKLibraryCore.itemById(lib.index, lib.focusId)) lib.focusId = "";
+  }
+
+  function libApply(result, message) {
+    if (!result || !result.ok) {
+      showMessage("error", (result && result.error) || "The library could not be changed.");
+      setStatus("Library unchanged");
+      renderLibrary();
+      return false;
+    }
+    if (result.index) lib.index = result.index;
+    if (result.missing) lib.missing = result.missing;
+    if (message) {
+      showMessage("ok", message);
+      setStatus(message);
+    }
+    libPruneSelection();
+    libRefresh();
+    return true;
+  }
+
+  function libVisibleItems() {
+    var core = libCore();
+    if (!core || !lib.index) return [];
+    return core.query(lib.index, {
+      search: lib.search,
+      type: lib.type,
+      host: lib.host,
+      category: lib.category,
+      collection: lib.collection,
+      folderId: lib.folderId,
+      sort: lib.sort
+    });
+  }
+
+  function libSelectedItems() {
+    var core = libCore();
+    var out = [];
+    if (!core || !lib.index) return out;
+    for (var i = 0; i < lib.selected.length; i++) {
+      var item = core.itemById(lib.index, lib.selected[i]);
+      if (item) out.push(item);
+    }
+    return out;
+  }
+
+  function libIsMissing(id) {
+    return lib.missing.indexOf(id) >= 0;
+  }
+
+  function libCurrentHost() {
+    if (state.hostId === "AEFT" || state.hostId === "PPRO") return state.hostId;
+    return null;
+  }
+
+  function libWorksHere(item) {
+    var host = libCurrentHost();
+    if (!host) return true;
+    return item.hostSupport.indexOf(host) >= 0;
+  }
+
+  function libHostText(item) {
+    if (item.hostSupport.length === 2) return "Both apps";
+    if (item.hostSupport[0] === "PPRO") return "Premiere Pro only";
+    return "After Effects only";
+  }
+
+  function libTypeLabel(type) {
+    var core = libCore();
+    if (core && core.TYPE_LABEL[type]) return core.TYPE_LABEL[type];
+    return type;
+  }
+
+  function libTypeIcon(type) {
+    if (type === "mogrt") return "layers";
+    if (type === "pr-recipe") return "easing";
+    if (type === "pack") return "library";
+    return "presets";
+  }
+
+  function libIconEl(name, size, className) {
+    var span = document.createElement("span");
+    span.className = className || "qk-icon";
+    if (window.QKIcons && window.QKIcons.has(name)) {
+      span.innerHTML = window.QKIcons.svg(name, size || 16);
+    }
+    return span;
+  }
+
+  function libClear(node) {
+    if (!node) return;
+    while (node.firstChild) node.removeChild(node.firstChild);
+  }
+
+  function libEl(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function libPlural(count, one, many) {
+    return count + " " + (count === 1 ? one : many);
+  }
+
+  /* ---------------------------------------------------------- rendering */
+
+  function renderLibrary() {
+    if (!els.libItems || !els.libCollections) return;
+    var core = libCore();
+
+    els.libPath.textContent = lib.root
+      ? "Stored locally in " + lib.root
+      : "Stored locally in %APPDATA%\\QuickKit\\library";
+
+    if (els.libSearch && els.libSearch.value !== lib.search) els.libSearch.value = lib.search;
+    if (els.libSearchClear) els.libSearchClear.hidden = lib.search === "";
+
+    if (els.libType) els.libType.value = lib.type;
+    if (els.libHost) els.libHost.value = lib.host;
+    if (els.libSort) els.libSort.value = lib.sort;
+
+    if (!core) {
+      renderLibCollections([]);
+      renderLibFolders([]);
+      libShowEmpty(
+        "The library script did not load",
+        "QuickKit could not find its library engine. Reinstall the panel and reopen it.",
+        []
+      );
+      els.libItems.innerHTML = "";
+      els.libCount.textContent = "";
+      return;
+    }
+
+    if (!lib.index) {
+      renderLibCollections([]);
+      renderLibFolders([]);
+      if (lib.error) {
+        libShowEmpty("The library could not be opened", lib.error, [
+          { label: "Try again", primary: true, onClick: function () { lib.loaded = false; lib.error = ""; libRefresh(); } }
+        ]);
+      } else {
+        libShowEmpty("Opening the library", "Reading your items from disk.", []);
+      }
+      els.libItems.innerHTML = "";
+      els.libCount.textContent = lib.loading ? "Loading" : "";
+      return;
+    }
+
+    renderLibCategories();
+    renderLibCrumbs();
+    renderLibCollections(core.counts(lib.index));
+    renderLibFolders(core);
+
+    var all = libVisibleItems();
+    var total = lib.index.items.length;
+    var shown = all.slice(0, LIB_RENDER_MAX);
+
+    if (els.libCount) {
+      var countText = all.length === total ? libPlural(total, "item", "items") : all.length + " of " + total + " items";
+      if (lib.selected.length) countText += " · " + lib.selected.length + " selected";
+      els.libCount.textContent = countText;
+    }
+
+    renderLibItems(shown);
+    if (all.length > LIB_RENDER_MAX) {
+      lib.note = "Showing the first " + LIB_RENDER_MAX + " of " + all.length + " items. Narrow the search to see the rest.";
+    }
+    renderLibNote();
+
+    if (!all.length) {
+      if (!total) {
+        libShowEmpty(
+          "Your library is empty",
+          "Presets saved in the Presets tab appear here on the next load. You can also import a .qkpack from another machine.",
+          [
+            { label: "Import pack", primary: true, onClick: function () { libImportPack(); } },
+            { label: "New folder", onClick: function () { libNewFolder(); } }
+          ]
+        );
+      } else if (lib.search || lib.type !== "all" || lib.host !== "all" || lib.category !== "all" || lib.collection !== "all") {
+        libShowEmpty("Nothing matches", "No item fits the search and filters. Loosen one of them, or clear them all.", [
+          { label: "Clear filters", primary: true, onClick: libClearFilters }
+        ]);
+      } else {
+        libShowEmpty(
+          "This folder is empty",
+          "Drop items onto it from All items, or save a new preset in the Presets tab.",
+          [
+            {
+              label: "Show all items",
+              onClick: function () {
+                lib.folderId = "";
+                renderLibrary();
+              }
+            }
+          ]
+        );
+      }
+    } else {
+      els.libEmpty.hidden = true;
+    }
+
+    renderLibViewButtons();
+  }
+
+  function renderLibViewButtons() {
+    if (els.libItems) {
+      els.libItems.className = "qk-lib-items is-" + lib.view;
+    }
+    if (els.libViewGrid) els.libViewGrid.setAttribute("aria-pressed", lib.view === "grid" ? "true" : "false");
+    if (els.libViewList) els.libViewList.setAttribute("aria-pressed", lib.view === "list" ? "true" : "false");
+    if (els.libThumb) els.libThumb.value = String(lib.thumb);
+    if (els.libItems) els.libItems.style.setProperty("--qk-lib-thumb", lib.thumb + "px");
+  }
+
+  function renderLibCategories() {
+    if (!els.libCategory || !lib.index) return;
+    var core = libCore();
+    var names = core.categories(lib.index);
+    var wanted = lib.category;
+    var keep = wanted;
+    libClear(els.libCategory);
+
+    var first = libEl("option", "", "All categories");
+    first.value = "all";
+    els.libCategory.appendChild(first);
+
+    var seen = wanted === "all" || wanted === "";
+    for (var i = 0; i < names.length; i++) {
+      var option = libEl("option", "", names[i]);
+      option.value = names[i];
+      if (names[i] === wanted) seen = true;
+      els.libCategory.appendChild(option);
+    }
+    if (!seen) {
+      keep = "all";
+      lib.category = "all";
+    }
+    els.libCategory.value = keep;
+  }
+
+  function renderLibCrumbs() {
+    if (!els.libCrumbs || !lib.index) return;
+    var core = libCore();
+    libClear(els.libCrumbs);
+
+    var rootBtn = libEl("button", "qk-lib-crumb", "All items");
+    rootBtn.type = "button";
+    rootBtn.setAttribute("data-folder", "");
+    rootBtn.setAttribute("data-tip", "Show every folder");
+    if (!lib.folderId) rootBtn.setAttribute("aria-current", "page");
+    els.libCrumbs.appendChild(rootBtn);
+
+    var path = lib.folderId ? core.folderPathOf(lib.index, lib.folderId) : [];
+    var ids = [];
+    var cursor = lib.folderId ? core.folderById(lib.index, lib.folderId) : null;
+    while (cursor && ids.length < 20) {
+      ids.unshift(cursor.id);
+      cursor = cursor.parentId ? core.folderById(lib.index, cursor.parentId) : null;
+    }
+
+    for (var i = 0; i < ids.length; i++) {
+      els.libCrumbs.appendChild(libEl("span", "qk-lib-crumb__sep", "/"));
+
+      var btn = libEl("button", "qk-lib-crumb", path[i] || "Folder");
+      btn.type = "button";
+      btn.setAttribute("data-folder", ids[i]);
+      btn.setAttribute("data-tip", "Open " + (path[i] || "folder"));
+      if (i === ids.length - 1) btn.setAttribute("aria-current", "page");
+      els.libCrumbs.appendChild(btn);
+    }
+  }
+
+  function renderLibCollections(counts) {
+    if (!els.libCollections) return;
+    var core = libCore();
+    libClear(els.libCollections);
+    if (!core) return;
+
+    var list = core.COLLECTIONS;
+    for (var i = 0; i < list.length; i++) {
+      var entry = list[i];
+      var btn = libEl("button", "qk-lib-collection");
+      btn.type = "button";
+      btn.setAttribute("data-collection", entry.id);
+      btn.setAttribute("aria-pressed", lib.collection === entry.id ? "true" : "false");
+      btn.setAttribute("data-tip", libCollectionTip(entry.id));
+      btn.appendChild(document.createTextNode(entry.label));
+
+      if (counts && counts.collections) {
+        var count = counts.collections[entry.id];
+        if (typeof count === "number") {
+          var badge = libEl("span", "qk-lib-collection__count", String(count));
+          btn.appendChild(badge);
+        }
+      }
+      els.libCollections.appendChild(btn);
+    }
+  }
+
+  function libCollectionTip(id) {
+    if (id === "favorites") return "Items you starred";
+    if (id === "recent") return "Items used at least once, newest first";
+    if (id === "most-used") return "Items you use the most, highest first";
+    if (id === "untagged") return "Items with no tags yet";
+    if (id === "text") return "Text, titles, captions and kinetic type";
+    if (id === "transitions") return "Transitions, wipes and moves";
+    if (id === "shapes") return "Shape and mask presets";
+    return "Every item in the library";
+  }
+
+  function renderLibFolders(core) {
+    if (!els.libFolders) return;
+    libClear(els.libFolders);
+    if (!core || !lib.index) return;
+
+    var counts = {};
+    for (var i = 0; i < lib.index.items.length; i++) {
+      var folderId = lib.index.items[i].folderId;
+      counts[folderId] = (counts[folderId] || 0) + 1;
+    }
+
+    var rootRow = libFolderRow("", "All items", lib.index.items.length, 0, true);
+    els.libFolders.appendChild(rootRow);
+
+    var byParent = {};
+    for (var f = 0; f < lib.index.folders.length; f++) {
+      var folder = lib.index.folders[f];
+      var key = folder.parentId || "";
+      if (!byParent[key]) byParent[key] = [];
+      byParent[key].push(folder);
+    }
+    for (var k in byParent) {
+      if (!Object.prototype.hasOwnProperty.call(byParent, k)) continue;
+      byParent[k].sort(function (a, b) {
+        return a.order - b.order || (a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1);
+      });
+    }
+
+    function addChildren(parentId, depth) {
+      var list = byParent[parentId] || [];
+      for (var j = 0; j < list.length; j++) {
+        var child = list[j];
+        var total = 0;
+        var span = core.descendantIds(lib.index, child.id);
+        for (var s = 0; s < span.length; s++) total += counts[span[s]] || 0;
+        els.libFolders.appendChild(libFolderRow(child.id, child.name, total, depth, false));
+        if (depth < 10) addChildren(child.id, depth + 1);
+      }
+    }
+    addChildren("", 0);
+  }
+
+  function libFolderRow(id, name, count, depth, isRoot) {
+    var row = libEl("button", "qk-lib-folder" + (isRoot ? " qk-lib-folder--root" : ""));
+    row.type = "button";
+    row.setAttribute("data-folder", id);
+    row.setAttribute("aria-current", lib.folderId === id ? "true" : "false");
+    row.style.setProperty("--qk-lib-depth", String(depth));
+    row.setAttribute(
+      "data-tip",
+      isRoot ? "Items that are not in a folder" : "Show " + name + " and its subfolders. Drop items here to move them."
+    );
+
+    row.appendChild(libIconEl(isRoot ? "library" : "folder", 14, "qk-lib-folder__icon"));
+    row.appendChild(libEl("span", "qk-lib-folder__name", name));
+    row.appendChild(libEl("span", "qk-lib-folder__count", String(count)));
+    return row;
+  }
+
+  function renderLibNote() {
+    if (!els.libNote) return;
+    if (lib.note) {
+      els.libNote.textContent = lib.note;
+      els.libNote.hidden = false;
+    } else {
+      els.libNote.textContent = "";
+      els.libNote.hidden = true;
+    }
+  }
+
+  function libShowEmpty(title, body, actions) {
+    if (!els.libEmpty) return;
+    els.libEmpty.hidden = false;
+    els.libEmptyTitle.textContent = title;
+    els.libEmptyBody.textContent = body;
+    libClear(els.libEmptyActions);
+    for (var i = 0; i < actions.length; i++) {
+      var action = actions[i];
+      var btn = libEl("button", "qk-btn " + (action.primary ? "qk-btn--primary" : "qk-btn--secondary") + " qk-btn--sm", action.label);
+      btn.type = "button";
+      btn.addEventListener("click", action.onClick);
+      els.libEmptyActions.appendChild(btn);
+    }
+    if (els.libEmptyMark) {
+      libClear(els.libEmptyMark);
+      els.libEmptyMark.appendChild(libIconEl("library", 28));
+    }
+  }
+
+  function renderLibItems(items) {
+    if (!els.libItems) return;
+    libClear(els.libItems);
+
+    for (var i = 0; i < items.length; i++) {
+      els.libItems.appendChild(libCard(items[i]));
+    }
+
+    if (items.length && !lib.focusId) lib.focusId = items[0].id;
+    if (lib.focusId) {
+      var focusCard = els.libItems.querySelector('[data-id="' + lib.focusId + '"]');
+      if (focusCard) focusCard.setAttribute("tabindex", "0");
+    }
+  }
+
+  function libCard(item) {
+    var missing = libIsMissing(item.id);
+    var works = libWorksHere(item);
+    var selected = lib.selected.indexOf(item.id) >= 0;
+
+    var card = libEl("div", "qk-lib-card");
+    card.setAttribute("role", "option");
+    card.setAttribute("data-id", item.id);
+    card.setAttribute("aria-selected", selected ? "true" : "false");
+    card.setAttribute("tabindex", "-1");
+    card.setAttribute("draggable", "true");
+    card.setAttribute(
+      "aria-label",
+      item.name + ", " + libTypeLabel(item.type) + ", " + libHostText(item) + (missing ? ", file missing" : "")
+    );
+
+    var tip = libTypeLabel(item.type) + " · " + libHostText(item) + (missing ? " · the file is missing on disk" : "");
+    if (!works) {
+      card.className += " is-other-host";
+      card.setAttribute("aria-disabled", "true");
+      tip = "Only works in " + (item.hostSupport[0] === "PPRO" ? "Premiere Pro" : "After Effects") + ". It stays in the library for that app.";
+    }
+    card.setAttribute("data-tip", tip);
+
+    var thumb = libEl("span", "qk-lib-card__thumb");
+    var thumbUrl = "";
+    var api = lib.api;
+    if (!missing && api && item.previewThumb && typeof api.itemFileUrl === "function") {
+      thumbUrl = api.itemFileUrl(item.id, item.previewThumb);
+    }
+    if (thumbUrl) {
+      var img = document.createElement("img");
+      img.src = thumbUrl;
+      img.alt = "";
+      img.draggable = false;
+      img.addEventListener("error", function () {
+        libClear(thumb);
+        thumb.appendChild(libIconEl(libTypeIcon(item.type), 20, "qk-lib-card__glyph"));
+      });
+      thumb.appendChild(img);
+    } else {
+      thumb.appendChild(libIconEl(libTypeIcon(item.type), 20, "qk-lib-card__glyph"));
+    }
+    card.appendChild(thumb);
+
+    var text = libEl("div", "qk-lib-card__text");
+    text.appendChild(libEl("div", "qk-lib-card__name", item.name));
+    var meta = libTypeLabel(item.type) + " · " + (item.category || "No category");
+    if (!works) meta += " · " + item.hostSupport[0];
+    text.appendChild(libEl("div", "qk-lib-card__meta", meta));
+    card.appendChild(text);
+
+    if (missing) {
+      var badge = libEl("span", "qk-lib-card__badge", "Missing");
+      badge.setAttribute("data-tip", "The asset file is gone. Repair keeps the entry so you can re-import it.");
+      card.appendChild(badge);
+    }
+
+    var star = libEl("button", "qk-lib-card__star");
+    star.type = "button";
+    star.setAttribute("aria-pressed", item.favorite ? "true" : "false");
+    star.setAttribute("aria-label", item.favorite ? "Remove from favorites" : "Add to favorites");
+    star.setAttribute("data-tip", item.favorite ? "Remove from Favorites" : "Add to Favorites");
+    star.appendChild(libIconEl("star", 14));
+    star.addEventListener("click", function (event) {
+      event.stopPropagation();
+      libToggleFavorite(item.id);
+    });
+    card.appendChild(star);
+
+    return card;
+  }
+
+  /* --------------------------------------------------------- interaction */
+
+  function libSetSelection(ids) {
+    lib.selected = ids.slice(0);
+    if (ids.length) {
+      lib.anchor = ids[0];
+      lib.focusId = ids[0];
+    }
+    renderLibrary();
+  }
+
+  function libClearFilters() {
+    lib.search = "";
+    lib.type = "all";
+    lib.host = "all";
+    lib.category = "all";
+    lib.collection = "all";
+    lib.folderId = "";
+    renderLibrary();
+  }
+
+  function libToggleFavorite(id) {
+    var core = libCore();
+    if (!core || !lib.index) return;
+    var item = core.itemById(lib.index, id);
+    if (!item) return;
+    var api = libApiGet();
+    if (!api) return;
+    libApply(
+      api.itemUpdate({ id: id, favorite: !item.favorite }),
+      item.favorite ? "Removed \"" + item.name + "\" from Favorites." : "Added \"" + item.name + "\" to Favorites."
+    );
+  }
+
+  function libSelectCard(id, event) {
+    var list = libVisibleItems();
+    if (event && event.shiftKey && lib.anchor) {
+      var from = -1;
+      var to = -1;
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].id === lib.anchor) from = i;
+        if (list[i].id === id) to = i;
+      }
+      if (from >= 0 && to >= 0) {
+        var ids = [];
+        var start = Math.min(from, to);
+        var end = Math.max(from, to);
+        for (var j = start; j <= end; j++) ids.push(list[j].id);
+        lib.selected = ids;
+        lib.focusId = id;
+        renderLibrary();
+        return;
+      }
+    }
+
+    if (event && (event.ctrlKey || event.metaKey)) {
+      var at = lib.selected.indexOf(id);
+      if (at >= 0) lib.selected.splice(at, 1);
+      else lib.selected.push(id);
+      lib.anchor = id;
+      lib.focusId = id;
+      renderLibrary();
+      return;
+    }
+
+    lib.selected = [id];
+    lib.anchor = id;
+    lib.focusId = id;
+    renderLibrary();
+  }
+
+  function libFocusStep(step) {
+    var list = libVisibleItems();
+    if (!list.length) return;
+    var at = -1;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === lib.focusId) at = i;
+    }
+    if (at < 0) at = 0;
+    var next = at + step;
+    if (next < 0) next = 0;
+    if (next > list.length - 1) next = list.length - 1;
+    var target = list[next];
+
+    lib.selected = [target.id];
+    lib.focusId = target.id;
+    lib.anchor = target.id;
+    renderLibrary();
+
+    var card = els.libItems.querySelector('[data-id="' + target.id + '"]');
+    if (card) {
+      card.focus();
+      if (card.scrollIntoView) {
+        try {
+          card.scrollIntoView({ block: "nearest", inline: "nearest" });
+        } catch (eScroll) {}
+      }
+    }
+  }
+
+  function libOpenItemMenu(id, x, y) {
+    var core = libCore();
+    if (!core || !lib.index) return;
+    var item = core.itemById(lib.index, id);
+    if (!item) return;
+
+    if (lib.selected.indexOf(id) < 0) lib.selected = [id];
+    lib.anchor = id;
+    lib.focusId = id;
+    renderLibrary();
+
+    var rows = [];
+    rows.push({ label: "Open details…", onClick: function () { libEditItem(id); } });
+    rows.push({ label: "Rename (F2)", onClick: function () { libRenameItem(id); } });
+    rows.push({
+      label: item.favorite ? "Remove from Favorites" : "Add to Favorites",
+      onClick: function () { libToggleFavorite(id); }
+    });
+    rows.push({ sep: true });
+    rows.push({ heading: "Move to" });
+    rows.push({ label: "All items (no folder)", onClick: function () { libMoveItems(lib.selected, ""); } });
+    for (var i = 0; i < lib.index.folders.length; i++) {
+      (function (folder) {
+        var path = core.folderPathOf(lib.index, folder.id).join(" / ");
+        rows.push({
+          label: path || folder.name,
+          onClick: function () { libMoveItems(lib.selected, folder.id); },
+          disabled: lib.selected.length > 0 && lib.selected.every(function (sid) {
+            var sitem = core.itemById(lib.index, sid);
+            return sitem && sitem.folderId === folder.id;
+          })
+        });
+      })(lib.index.folders[i]);
+    }
+    rows.push({ sep: true });
+    rows.push({
+      label: lib.selected.length > 1 ? "Export " + lib.selected.length + " items…" : "Export item…",
+      onClick: function () { libExportPack(); }
+    });
+    rows.push({
+      label: lib.selected.length > 1 ? "Delete " + lib.selected.length + " items…" : "Delete item…",
+      onClick: function () { libDeleteItems(lib.selected); }
+    });
+
+    libShowMenu(rows, x, y);
+  }
+
+  function libOpenFolderMenu(id, x, y) {
+    var core = libCore();
+    if (!core || !lib.index) return;
+    var folder = id ? core.folderById(lib.index, id) : null;
+    var rows = [
+      { label: "New folder here…", onClick: function () { libNewFolder(id); } }
+    ];
+    if (folder) {
+      rows.push({ label: "Rename folder…", onClick: function () { libRenameFolder(id); } });
+      rows.push({
+        label: "Move folder to All items",
+        disabled: folder.parentId === "",
+        onClick: function () { libMoveFolder(id, ""); }
+      });
+      rows.push({ sep: true });
+      rows.push({ label: "Delete folder…", onClick: function () { libDeleteFolder(id); } });
+    }
+    libShowMenu(rows, x, y);
+  }
+
+  function libShowMenu(rows, x, y) {
+    if (!els.libMenu) return;
+    libClear(els.libMenu);
+
+    for (var i = 0; i < rows.length; i++) (function (row) {
+      if (row.sep) {
+        els.libMenu.appendChild(libEl("div", "qk-lib-menu__sep"));
+        return;
+      }
+      if (row.heading) {
+        els.libMenu.appendChild(libEl("div", "qk-lib-menu__label", row.heading));
+        return;
+      }
+      var btn = libEl("button", "", row.label);
+      btn.type = "button";
+      btn.setAttribute("role", "menuitem");
+      btn.disabled = !!row.disabled;
+      btn.addEventListener("click", function () {
+        libCloseMenu();
+        row.onClick();
+      });
+      els.libMenu.appendChild(btn);
+    })(rows[i]);
+
+    els.libMenu.hidden = false;
+    els.libMenu.style.left = "0px";
+    els.libMenu.style.top = "0px";
+
+    var box = els.libMenu.getBoundingClientRect();
+    var left = Math.min(Math.max(0, x), Math.max(0, window.innerWidth - box.width - 4));
+    var top = Math.min(Math.max(0, y), Math.max(0, window.innerHeight - box.height - 4));
+    els.libMenu.style.left = Math.round(left) + "px";
+    els.libMenu.style.top = Math.round(top) + "px";
+
+    var first = els.libMenu.querySelector("button:not(:disabled)");
+    if (first) first.focus();
+  }
+
+  function libCloseMenu() {
+    if (els.libMenu) els.libMenu.hidden = true;
+  }
+
+  function libDeleteItems(ids) {
+    var items = [];
+    var core = libCore();
+    for (var i = 0; i < ids.length; i++) {
+      var item = core.itemById(lib.index, ids[i]);
+      if (item) items.push(item);
+    }
+    if (!items.length) return;
+
+    var names = items
+      .slice(0, 5)
+      .map(function (item) {
+        return item.name;
+      })
+      .join(", ");
+    var lead =
+      items.length > 5 ? names + " and " + (items.length - 5) + " more" : names;
+
+    libOpenDialog({
+      title: items.length > 1 ? "Delete " + items.length + " items?" : "Delete this item?",
+      lead: lead,
+      body: [
+        libEl(
+          "p",
+          "qk-lib-dialog__message",
+          "The item folders are removed from %APPDATA%\\QuickKit\\library. This cannot be undone."
+        )
+      ],
+      okLabel: "Delete",
+      onOk: function () {
+        var result = libApiGet().itemsDelete({ ids: items.map(function (item) { return item.id; }) });
+        if (!result.ok) return result.error || "The items could not be deleted.";
+        libApply(result, "Deleted " + libPlural(items.length, "item", "items") + ".");
+        return "";
+      }
+    });
+  }
+
+  function libMoveItems(ids, folderId) {
+    if (!ids.length) return;
+    var core = libCore();
+    var folder = folderId ? core.folderById(lib.index, folderId) : null;
+    var where = folder ? "\"" + folder.name + "\"" : "All items";
+    var result = libApiGet().itemsMove({ ids: ids, folderId: folderId });
+    libApply(result, "Moved " + libPlural(ids.length, "item", "items") + " to " + where + ".");
+  }
+
+  function libRenameItem(id) {
+    var core = libCore();
+    var item = core.itemById(lib.index, id);
+    if (!item) return;
+
+    var input = libTextInput(item.name, "Item name");
+    libOpenDialog({
+      title: "Rename item",
+      body: [libField("Name", input)],
+      okLabel: "Rename",
+      focus: input,
+      onOk: function () {
+        var name = input.value.replace(/^\s+|\s+$/g, "");
+        if (!name) return "Give the item a name first.";
+        var result = libApiGet().itemUpdate({ id: id, name: name });
+        if (!result.ok) return result.error || "The item could not be renamed.";
+        libApply(result, "Renamed the item to \"" + name + "\".");
+        return "";
+      }
+    });
+  }
+
+  function libEditItem(id) {
+    var core = libCore();
+    var item = core.itemById(lib.index, id);
+    if (!item) return;
+
+    var name = libTextInput(item.name, "Item name");
+    var category = libTextInput(item.category, "e.g. Titles");
+    var tags = libTextInput(item.tags.join(", "), "intro, logo, clean");
+    var notes = document.createElement("textarea");
+    notes.className = "qk-input qk-lib-dialog__notes";
+    notes.rows = 3;
+    notes.value = item.notes || "";
+    notes.placeholder = "What this item is for";
+
+    var folderSelect = libEl("select", "qk-select");
+    var flat = libFolderOptions();
+    for (var i = 0; i < flat.length; i++) {
+      var option = libEl("option", "", flat[i].label);
+      option.value = flat[i].value;
+      folderSelect.appendChild(option);
+    }
+    folderSelect.value = item.folderId || "";
+
+    var facts = libEl("p", "qk-lib-dialog__message");
+    facts.textContent =
+      libTypeLabel(item.type) +
+      " · " +
+      libHostText(item) +
+      " · " +
+      (item.usageCount ? "used " + libPlural(item.usageCount, "time", "times") : "never used") +
+      " · added " +
+      (item.createdAt || "unknown");
+
+    libOpenDialog({
+      title: "Item details",
+      body: [
+        facts,
+        libField("Name", name),
+        libField("Category", category),
+        libField("Tags (comma separated)", tags),
+        libField("Folder", folderSelect),
+        libField("Notes", notes)
+      ],
+      okLabel: "Save",
+      focus: name,
+      onOk: function () {
+        var wanted = name.value.replace(/^\s+|\s+$/g, "");
+        if (!wanted) return "Give the item a name first.";
+        var result = libApiGet().itemUpdate({
+          id: id,
+          name: wanted,
+          category: category.value,
+          tags: tags.value,
+          folderId: folderSelect.value,
+          notes: notes.value
+        });
+        if (!result.ok) return result.error || "The item could not be saved.";
+        libApply(result, "Saved \"" + wanted + "\".");
+        return "";
+      }
+    });
+  }
+
+  function libFolderOptions() {
+    var core = libCore();
+    var out = [{ value: "", label: "All items (no folder)" }];
+    if (!core || !lib.index) return out;
+
+    var byParent = {};
+    for (var i = 0; i < lib.index.folders.length; i++) {
+      var folder = lib.index.folders[i];
+      var key = folder.parentId || "";
+      if (!byParent[key]) byParent[key] = [];
+      byParent[key].push(folder);
+    }
+    for (var k in byParent) {
+      if (!Object.prototype.hasOwnProperty.call(byParent, k)) continue;
+      byParent[k].sort(function (a, b) {
+        return a.order - b.order || (a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1);
+      });
+    }
+
+    function add(parentId, depth) {
+      var list = byParent[parentId] || [];
+      for (var j = 0; j < list.length; j++) {
+        var prefix = "";
+        for (var d = 0; d < depth; d++) prefix += "    ";
+        out.push({ value: list[j].id, label: prefix + list[j].name });
+        if (depth < 10) add(list[j].id, depth + 1);
+      }
+    }
+    add("", 0);
+    return out;
+  }
+
+  function libNewFolder(parentId) {
+    var parent = parentId === undefined ? lib.folderId : parentId;
+    var name = libTextInput("", "Folder name");
+    var parentSelect = libEl("select", "qk-select");
+    var flat = libFolderOptions();
+    for (var i = 0; i < flat.length; i++) {
+      var option = libEl("option", "", flat[i].label);
+      option.value = flat[i].value;
+      parentSelect.appendChild(option);
+    }
+    parentSelect.value = parent || "";
+
+    libOpenDialog({
+      title: "New folder",
+      body: [libField("Name", name), libField("Inside", parentSelect)],
+      okLabel: "Create",
+      focus: name,
+      onOk: function () {
+        var wanted = name.value.replace(/^\s+|\s+$/g, "");
+        if (!wanted) return "Give the folder a name first.";
+        var result = libApiGet().folderCreate({ name: wanted, parentId: parentSelect.value });
+        if (!result.ok) return result.error || "The folder could not be created.";
+        libApply(result, "Created the folder \"" + wanted + "\".");
+        return "";
+      }
+    });
+  }
+
+  function libRenameFolder(id) {
+    var core = libCore();
+    var folder = core.folderById(lib.index, id);
+    if (!folder) return;
+    var name = libTextInput(folder.name, "Folder name");
+
+    libOpenDialog({
+      title: "Rename folder",
+      body: [libField("Name", name)],
+      okLabel: "Rename",
+      focus: name,
+      onOk: function () {
+        var wanted = name.value.replace(/^\s+|\s+$/g, "");
+        if (!wanted) return "Give the folder a name first.";
+        var result = libApiGet().folderRename({ id: id, name: wanted });
+        if (!result.ok) return result.error || "The folder could not be renamed.";
+        libApply(result, "Renamed the folder to \"" + wanted + "\".");
+        return "";
+      }
+    });
+  }
+
+  function libMoveFolder(id, parentId) {
+    var result = libApiGet().folderMove({ id: id, parentId: parentId });
+    libApply(result, result.ok ? "Moved the folder." : "");
+  }
+
+  function libDeleteFolder(id) {
+    var core = libCore();
+    var folder = core.folderById(lib.index, id);
+    if (!folder) return;
+
+    var inside = 0;
+    var span = core.descendantIds(lib.index, id);
+    for (var i = 0; i < lib.index.items.length; i++) {
+      if (span.indexOf(lib.index.items[i].folderId) >= 0) inside++;
+    }
+
+    libOpenDialog({
+      title: "Delete folder \"" + folder.name + "\"?",
+      lead: "The folder goes away; its items and subfolders move up one level. Nothing is deleted.",
+      body: [
+        libEl(
+          "p",
+          "qk-lib-dialog__message",
+          inside ? libPlural(inside, "item is", "items are") + " inside this folder tree and will be kept." : "The folder is empty."
+        )
+      ],
+      okLabel: "Delete folder",
+      onOk: function () {
+        var result = libApiGet().folderDelete({ id: id });
+        if (!result.ok) return result.error || "The folder could not be deleted.";
+        if (lib.folderId === id) lib.folderId = result.parentId || "";
+        libApply(result, "Deleted the folder \"" + folder.name + "\".");
+        return "";
+      }
+    });
+  }
+
+  /* ------------------------------------------------------------ dialogs */
+
+  function libTextInput(value, placeholder) {
+    var input = document.createElement("input");
+    input.className = "qk-input";
+    input.type = "text";
+    input.value = value || "";
+    input.placeholder = placeholder || "";
+    return input;
+  }
+
+  function libField(label, control) {
+    var wrap = document.createElement("label");
+    wrap.className = "qk-field";
+    var span = document.createElement("span");
+    span.className = "qk-label";
+    span.textContent = label;
+    wrap.appendChild(span);
+    wrap.appendChild(control);
+    return wrap;
+  }
+
+  function libOpenDialog(config) {
+    if (!els.libDialog) return;
+    lib.dialog = config;
+    lib.returnFocus = document.activeElement;
+
+    els.libDialogTitle.textContent = config.title || "Library";
+    els.libDialogLead.textContent = config.lead || "";
+    els.libDialogLead.hidden = !config.lead;
+    els.libDialogOk.textContent = config.okLabel || "Save";
+    els.libDialogOk.hidden = !!config.hideOk;
+
+    libClear(els.libDialogBody);
+    var body = config.body || [];
+    for (var i = 0; i < body.length; i++) els.libDialogBody.appendChild(body[i]);
+
+    lib.dialogError = libEl("p", "qk-lib-dialog__message");
+    lib.dialogError.hidden = true;
+    els.libDialogBody.appendChild(lib.dialogError);
+
+    els.libDialog.hidden = false;
+    if (config.focus) config.focus.focus();
+    else els.libDialogOk.focus();
+  }
+
+  function libCloseDialog() {
+    if (!els.libDialog || els.libDialog.hidden) return;
+    els.libDialog.hidden = true;
+    lib.dialog = null;
+    lib.dialogError = null;
+    if (lib.returnFocus && typeof lib.returnFocus.focus === "function") {
+      try {
+        lib.returnFocus.focus();
+      } catch (eFocus) {}
+    }
+    lib.returnFocus = null;
+  }
+
+  function libConfirmDialog() {
+    if (!lib.dialog || typeof lib.dialog.onOk !== "function") {
+      libCloseDialog();
+      return;
+    }
+    var problem = lib.dialog.onOk();
+    if (problem) {
+      if (lib.dialogError) {
+        lib.dialogError.textContent = problem;
+        lib.dialogError.hidden = false;
+      }
+      return;
+    }
+    libCloseDialog();
+  }
+
+  /* -------------------------------------------------- packs and repair */
+
+  function libPickSave(defaultName) {
+    var cep = window.cep;
+    if (!cep || !cep.fs || typeof cep.fs.showSaveDialogEx !== "function") return null;
+    try {
+      var result = cep.fs.showSaveDialogEx(
+        "Save a QuickKit pack",
+        lib.root || "",
+        ["qkpack"],
+        defaultName || "QuickKit pack.qkpack"
+      );
+      if (!result || result.err || !result.data) return "";
+      return String(result.data);
+    } catch (eSave) {
+      return "";
+    }
+  }
+
+  function libPickOpen() {
+    var cep = window.cep;
+    if (!cep || !cep.fs || typeof cep.fs.showOpenDialogEx !== "function") return null;
+    try {
+      var result = cep.fs.showOpenDialogEx(false, false, "Open a QuickKit pack", lib.root || "", ["qkpack"]);
+      if (!result || result.err || !result.data) return "";
+      return String(result.data[0] || "");
+    } catch (eOpen) {
+      return "";
+    }
+  }
+
+  function libExportPack() {
+    var api = libApiGet();
+    if (!api) {
+      showMessage("error", lib.apiError || "The library is not available.");
+      return;
+    }
+
+    var items = lib.selected.length ? libSelectedItems() : libVisibleItems();
+    if (!items.length) {
+      showMessage("error", "Select an item, or open a folder with something in it, before exporting.");
+      return;
+    }
+
+    var core = libCore();
+    var folder = lib.folderId ? core.folderById(lib.index, lib.folderId) : null;
+    var suggested = (folder ? folder.name : lib.selected.length ? "QuickKit selection" : "QuickKit library") + ".qkpack";
+    var target = libPickSave(suggested);
+    if (target === null) {
+      showMessage("error", "Choosing where to save needs the panel inside After Effects or Premiere Pro.");
+      return;
+    }
+    if (!target) return;
+
+    var ids = items.map(function (item) {
+      return item.id;
+    });
+    var result = api.exportPack({ ids: ids, name: suggested.replace(/\.qkpack$/i, ""), target: target });
+    if (!result.ok) {
+      showMessage("error", result.error || "The pack could not be written.");
+      return;
+    }
+
+    var text = "Exported " + libPlural(result.count, "item", "items") + " to " + result.path + ".";
+    if (result.skipped && result.skipped.length) {
+      text += " " + result.skipped.length + " item(s) had no files and were left out.";
+    }
+    showMessage("ok", text);
+    setStatus("Pack written");
+  }
+
+  function libImportPack() {
+    var api = libApiGet();
+    if (!api) {
+      showMessage("error", lib.apiError || "The library is not available.");
+      return;
+    }
+
+    var file = libPickOpen();
+    if (file === null) {
+      showMessage("error", "Choosing a pack needs the panel inside After Effects or Premiere Pro.");
+      return;
+    }
+    if (!file) return;
+
+    var info = api.inspectPack(file);
+    if (!info || !info.ok) {
+      showMessage("error", (info && info.error) || "That pack could not be read.");
+      return;
+    }
+
+    var choices = libEl("div", "qk-lib-dialog__choice");
+    var modes = [
+      { value: "skip", label: "Skip items already in the library" },
+      { value: "replace", label: "Replace them with the pack's copy" },
+      { value: "both", label: "Keep both (the pack's copy gets a number)" }
+    ];
+    var radios = [];
+    for (var i = 0; i < modes.length; i++) {
+      var row = document.createElement("label");
+      row.className = "qk-check";
+      var radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "qk-lib-import-mode";
+      radio.value = modes[i].value;
+      radio.checked = i === 0;
+      radios.push(radio);
+      var text = document.createElement("span");
+      text.textContent = modes[i].label;
+      row.appendChild(radio);
+      row.appendChild(text);
+      choices.appendChild(row);
+    }
+
+    var list = libEl("ul", "qk-lib-dialog__files");
+    var names = info.names || [];
+    for (var n = 0; n < names.length; n++) {
+      list.appendChild(libEl("li", "", names[n]));
+    }
+    if (info.count > names.length) {
+      list.appendChild(libEl("li", "", "and " + (info.count - names.length) + " more"));
+    }
+
+    libOpenDialog({
+      title: "Import \"" + info.name + "\"",
+      lead: libPlural(info.count, "item", "items") + (info.createdAt ? ", made " + info.createdAt : ""),
+      body: [choices, list],
+      okLabel: "Import",
+      onOk: function () {
+        var mode = "skip";
+        for (var r = 0; r < radios.length; r++) {
+          if (radios[r].checked) mode = radios[r].value;
+        }
+        var result = api.importPack({ file: file, mode: mode });
+        if (!result.ok) return result.error || "The pack could not be imported.";
+        var message = result.message || "Imported the pack.";
+        if (result.failed && result.failed.length) {
+          message += " " + result.failed.length + " item(s) could not be written.";
+        }
+        libApply(result, message);
+        return "";
+      }
+    });
+  }
+
+  function libRepairLibrary() {
+    var api = libApiGet();
+    if (!api) {
+      showMessage("error", lib.apiError || "The library is not available.");
+      return;
+    }
+
+    libOpenDialog({
+      title: "Repair the library?",
+      lead: "QuickKit rebuilds library.json from the item folders on disk. Nothing is deleted; damaged items are skipped and left where they are.",
+      body: [
+        libEl(
+          "p",
+          "qk-lib-dialog__message",
+          "Use this when items go missing from the list, or after copying the library folder from another machine."
+        )
+      ],
+      okLabel: "Repair library",
+      onOk: function () {
+        var result = api.repair();
+        if (!result.ok) return result.error || "The library could not be repaired.";
+        var text =
+          "Rebuilt the library index: " +
+          libPlural(result.index.items.length, "item", "items") +
+          " in " +
+          libPlural(result.index.folders.length, "folder", "folders") +
+          ".";
+        if (result.skipped && result.skipped.length) text += " " + result.skipped.length + " folder(s) were unreadable.";
+        libApply(result, text);
+        return "";
+      }
+    });
+  }
+
+  function libClearSearch() {
+    lib.search = "";
+    if (els.libSearch) els.libSearch.value = "";
+    renderLibrary();
+    if (els.libSearch) els.libSearch.focus();
+  }
+
+  function libIsTyping(target) {
+    if (!target) return false;
+    var tag = String(target.tagName || "").toLowerCase();
+    return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable === true;
+  }
+
+  /* ------------------------------------------------------------- wiring */
+
+  function bindLibrary() {
+    if (!els.libItems) return;
+
+    if (els.libSearch) {
+      els.libSearch.addEventListener("input", function () {
+        lib.search = els.libSearch.value;
+        lib.selected = [];
+        lib.anchor = "";
+        renderLibrary();
+      });
+    }
+    if (els.libSearchClear) els.libSearchClear.addEventListener("click", libClearSearch);
+    if (els.libType) {
+      els.libType.addEventListener("change", function () {
+        lib.type = els.libType.value;
+        lib.selected = [];
+        renderLibrary();
+      });
+    }
+    if (els.libHost) {
+      els.libHost.addEventListener("change", function () {
+        lib.host = els.libHost.value;
+        lib.selected = [];
+        renderLibrary();
+      });
+    }
+    if (els.libCategory) {
+      els.libCategory.addEventListener("change", function () {
+        lib.category = els.libCategory.value;
+        lib.selected = [];
+        renderLibrary();
+      });
+    }
+    if (els.libSort) {
+      els.libSort.addEventListener("change", function () {
+        lib.sort = els.libSort.value;
+        renderLibrary();
+      });
+    }
+    if (els.libNewFolder) {
+      els.libNewFolder.addEventListener("click", function () {
+        libNewFolder(lib.folderId);
+      });
+    }
+    if (els.libExport) els.libExport.addEventListener("click", libExportPack);
+    if (els.libImport) els.libImport.addEventListener("click", libImportPack);
+    if (els.libRepair) els.libRepair.addEventListener("click", libRepairLibrary);
+
+    if (els.libViewGrid) {
+      els.libViewGrid.addEventListener("click", function () {
+        lib.view = "grid";
+        libStore(LIB_VIEW_KEY, lib.view);
+        renderLibrary();
+      });
+    }
+    if (els.libViewList) {
+      els.libViewList.addEventListener("click", function () {
+        lib.view = "list";
+        libStore(LIB_VIEW_KEY, lib.view);
+        renderLibrary();
+      });
+    }
+    if (els.libThumb) {
+      els.libThumb.addEventListener("input", function () {
+        lib.thumb = Number(els.libThumb.value) || 112;
+        libStore(LIB_THUMB_KEY, lib.thumb);
+        renderLibViewButtons();
+      });
+    }
+
+    if (els.libCollections) {
+      els.libCollections.addEventListener("click", function (event) {
+        var btn = event.target.closest("[data-collection]");
+        if (!btn) return;
+        lib.collection = btn.getAttribute("data-collection");
+        lib.selected = [];
+        renderLibrary();
+      });
+    }
+
+    if (els.libCrumbs) {
+      els.libCrumbs.addEventListener("click", function (event) {
+        var btn = event.target.closest("[data-folder]");
+        if (!btn) return;
+        lib.folderId = btn.getAttribute("data-folder");
+        lib.selected = [];
+        renderLibrary();
+      });
+    }
+
+    if (els.libFolders) {
+      els.libFolders.addEventListener("click", function (event) {
+        var row = event.target.closest("[data-folder]");
+        if (!row) return;
+        lib.folderId = row.getAttribute("data-folder");
+        lib.selected = [];
+        renderLibrary();
+      });
+      els.libFolders.addEventListener("contextmenu", function (event) {
+        var row = event.target.closest("[data-folder]");
+        if (!row) return;
+        event.preventDefault();
+        libOpenFolderMenu(row.getAttribute("data-folder"), event.clientX, event.clientY);
+      });
+      els.libFolders.addEventListener("dragover", function (event) {
+        var row = event.target.closest("[data-folder]");
+        if (!row) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+        row.classList.add("is-drop");
+      });
+      els.libFolders.addEventListener("dragleave", function (event) {
+        var row = event.target.closest("[data-folder]");
+        if (row) row.classList.remove("is-drop");
+      });
+      els.libFolders.addEventListener("drop", function (event) {
+        var row = event.target.closest("[data-folder]");
+        if (!row) return;
+        event.preventDefault();
+        row.classList.remove("is-drop");
+        var ids = lib.dragIds && lib.dragIds.length ? lib.dragIds : libDropIds(event);
+        lib.dragIds = null;
+        if (ids.length) libMoveItems(ids, row.getAttribute("data-folder"));
+      });
+    }
+
+    els.libItems.addEventListener("click", function (event) {
+      var star = event.target.closest(".qk-lib-card__star");
+      if (star) return;
+      var card = event.target.closest(".qk-lib-card");
+      if (!card) return;
+      libSelectCard(card.getAttribute("data-id"), event);
+    });
+
+    els.libItems.addEventListener("dblclick", function (event) {
+      var card = event.target.closest(".qk-lib-card");
+      if (!card) return;
+      libEditItem(card.getAttribute("data-id"));
+    });
+
+    els.libItems.addEventListener("contextmenu", function (event) {
+      var card = event.target.closest(".qk-lib-card");
+      if (!card) return;
+      event.preventDefault();
+      libOpenItemMenu(card.getAttribute("data-id"), event.clientX, event.clientY);
+    });
+
+    els.libItems.addEventListener("dragstart", function (event) {
+      var card = event.target.closest(".qk-lib-card");
+      if (!card) return;
+      var id = card.getAttribute("data-id");
+      var ids = lib.selected.indexOf(id) >= 0 ? lib.selected.slice(0) : [id];
+      lib.dragIds = ids;
+      card.classList.add("is-dragging");
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", ids.join(","));
+      }
+    });
+
+    els.libItems.addEventListener("dragend", function (event) {
+      var card = event.target.closest(".qk-lib-card");
+      if (card) card.classList.remove("is-dragging");
+      lib.dragIds = null;
+      qsa(".qk-lib-folder.is-drop", els.libFolders).forEach(function (row) {
+        row.classList.remove("is-drop");
+      });
+    });
+
+    els.libItems.addEventListener("keydown", function (event) {
+      if (event.key === "Delete" || event.key === "Backspace") {
+        if (!lib.selected.length) return;
+        event.preventDefault();
+        libDeleteItems(lib.selected);
+        return;
+      }
+      if (event.key === "F2") {
+        if (!lib.selected.length) return;
+        event.preventDefault();
+        libRenameItem(lib.selected[0]);
+        return;
+      }
+      if (event.key === "Enter") {
+        if (!lib.selected.length) return;
+        event.preventDefault();
+        libEditItem(lib.selected[0]);
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+        event.preventDefault();
+        libFocusStep(1);
+        return;
+      }
+      if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+        event.preventDefault();
+        libFocusStep(-1);
+        return;
+      }
+      if (event.key === " " || event.key === "Spacebar") {
+        if (!lib.focusId) return;
+        event.preventDefault();
+        var at = lib.selected.indexOf(lib.focusId);
+        if (at >= 0) lib.selected.splice(at, 1);
+        else lib.selected.push(lib.focusId);
+        renderLibrary();
+      }
+    });
+
+    if (els.libDialogOk) els.libDialogOk.addEventListener("click", libConfirmDialog);
+    if (els.libDialogCancel) els.libDialogCancel.addEventListener("click", libCloseDialog);
+    if (els.libDialogClose) els.libDialogClose.addEventListener("click", libCloseDialog);
+    if (els.libDialog) {
+      els.libDialog.addEventListener("click", function (event) {
+        if (event.target === els.libDialog) libCloseDialog();
+      });
+    }
+
+    document.addEventListener("click", function (event) {
+      if (!els.libMenu || els.libMenu.hidden) return;
+      if (els.libMenu.contains(event.target)) return;
+      libCloseMenu();
+    });
+
+    window.addEventListener("resize", libCloseMenu);
+    window.addEventListener("scroll", libCloseMenu, true);
+
+    document.addEventListener("keydown", function (event) {
+      if (els.libDialog && !els.libDialog.hidden) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          libCloseDialog();
+          return;
+        }
+        if (event.key === "Enter" && event.target && event.target.tagName !== "TEXTAREA") {
+          event.preventDefault();
+          libConfirmDialog();
+        }
+        return;
+      }
+
+      if (event.key === "Escape" && els.libMenu && !els.libMenu.hidden) {
+        libCloseMenu();
+        return;
+      }
+
+      if (state.activeTab !== "library") return;
+
+      if ((event.ctrlKey || event.metaKey) && String(event.key).toLowerCase() === "f") {
+        event.preventDefault();
+        if (els.libSearch) {
+          els.libSearch.focus();
+          if (els.libSearch.select) els.libSearch.select();
+        }
+        return;
+      }
+
+      if (libIsTyping(event.target)) return;
+      if (els.libMenu && !els.libMenu.hidden) {
+        if (event.key === "Escape") {
+          libCloseMenu();
+          return;
+        }
+        return;
+      }
+
+      if (event.key === "Delete" && lib.selected.length) {
+        event.preventDefault();
+        libDeleteItems(lib.selected);
+      } else if (event.key === "F2" && lib.selected.length) {
+        event.preventDefault();
+        libRenameItem(lib.selected[0]);
+      }
+    });
+
+    var savedView = libStore(LIB_VIEW_KEY);
+    if (savedView === "list" || savedView === "grid") lib.view = savedView;
+    var savedThumb = Number(libStore(LIB_THUMB_KEY));
+    if (savedThumb >= 72 && savedThumb <= 176) lib.thumb = savedThumb;
+  }
+
+  function libDropIds(event) {
+    var raw = "";
+    try {
+      raw = event.dataTransfer ? String(event.dataTransfer.getData("text/plain") || "") : "";
+    } catch (eData) {
+      raw = "";
+    }
+    if (!raw) return [];
+    var parts = raw.split(",");
+    var out = [];
+    for (var i = 0; i < parts.length; i++) {
+      var id = parts[i].replace(/^\s+|\s+$/g, "");
+      if (id) out.push(id);
+    }
+    return out;
   }
 
   if (document.readyState === "loading") {
