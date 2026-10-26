@@ -1,8 +1,9 @@
-/* QuickKit library core (Part 6A).
+/* QuickKit library core (Part 6A, extended in 6B).
  *
  * Pure logic for the unified library: index schema, item and folder records,
  * migration of the Part 4 presets, nested folders, smart collections,
- * search/filter/sort, pack manifests and import conflict handling.
+ * search/filter/sort, pack manifests, import conflict handling, and the
+ * preview cache key that decides whether a stored preview is still exact.
  *
  * No Node, no DOM, no network. Storage is an adapter passed in by
  * extension/js/library-io.js (real disk) or by tests (a temp folder).
@@ -15,11 +16,17 @@
 })(typeof window !== "undefined" ? window : this, function () {
   "use strict";
 
-  var SCHEMA = 1;
+  /* Schema 2 adds item params + the preview cache key. A schema 1 library is
+     read as-is: every new field gets its default, nothing is thrown away. */
+  var SCHEMA = 2;
   var FORMAT = "quickkit-library";
   var ITEM_FORMAT = "quickkit-library-item";
   var FOLDERS_FORMAT = "quickkit-library-folders";
   var PACK_FORMAT = "quickkit-pack";
+
+  /* Preview files live inside the item folder, next to item.json. */
+  var PREVIEW_VIDEO = "preview.mp4";
+  var PREVIEW_THUMB = "thumb.webp";
 
   var TYPES = ["ae-preset", "mogrt", "pr-recipe", "pack"];
   var TYPE_LABEL = {
@@ -39,6 +46,44 @@
     mogrt: "asset.mogrt",
     "pr-recipe": "asset.qkrecipe.json",
     pack: "asset.qkpack"
+  };
+
+  var DIRECTIONS = [
+    { value: "in", label: "In" },
+    { value: "out", label: "Out" },
+    { value: "left", label: "From right" },
+    { value: "right", label: "From left" },
+    { value: "up", label: "From below" },
+    { value: "down", label: "From above" },
+    { value: "both", label: "In and out" }
+  ];
+  var EASINGS = [
+    { value: "smooth", label: "Smooth" },
+    { value: "linear", label: "Linear" },
+    { value: "snap", label: "Snap" },
+    { value: "bounce", label: "Bounce" }
+  ];
+
+  /* Parameters are part of the item, not of the preview: an item can be
+     generated at any settings and the preview is exact for the settings it
+     was generated with (that is what previewKey records). */
+  var PARAM_DEFS = {
+    "ae-preset": [
+      { key: "duration", label: "Duration", kind: "number", min: 0.6, max: 6, step: 0.1, unit: " s", value: 1.2 },
+      { key: "direction", label: "Direction", kind: "choice", options: DIRECTIONS, value: "in" },
+      { key: "easing", label: "Easing", kind: "choice", options: EASINGS, value: "smooth" },
+      { key: "distance", label: "Distance", kind: "number", min: 8, max: 160, step: 2, unit: " px", value: 40 }
+    ],
+    mogrt: [
+      { key: "duration", label: "Duration", kind: "number", min: 0.6, max: 8, step: 0.1, unit: " s", value: 2 },
+      { key: "easing", label: "Easing", kind: "choice", options: EASINGS, value: "smooth" }
+    ],
+    "pr-recipe": [
+      { key: "duration", label: "Duration", kind: "number", min: 0.2, max: 3, step: 0.1, unit: " s", value: 0.6 },
+      { key: "direction", label: "Direction", kind: "choice", options: DIRECTIONS, value: "in" },
+      { key: "amount", label: "Amount", kind: "number", min: 0, max: 200, step: 5, unit: " %", value: 100 }
+    ],
+    pack: []
   };
 
   var COLLECTIONS = [
@@ -185,6 +230,86 @@
     );
   }
 
+  /* -------------------------------------------------- params + preview key */
+
+  function paramDefs(type) {
+    return PARAM_DEFS[normalizeType(type)] || [];
+  }
+
+  function paramDefaults(type) {
+    var defs = paramDefs(type);
+    var out = {};
+    for (var i = 0; i < defs.length; i++) out[defs[i].key] = defs[i].value;
+    return out;
+  }
+
+  /* Only the keys this item type declares survive, values are clamped to the
+     declared range and unknown choices fall back to the default. A damaged
+     param therefore cannot make blend maths or a render go out of bounds. */
+  function normalizeParams(type, raw) {
+    var defs = paramDefs(type);
+    var source = raw && typeof raw === "object" ? raw : {};
+    var out = {};
+    for (var i = 0; i < defs.length; i++) {
+      var def = defs[i];
+      var value = source[def.key];
+      if (def.kind === "number") {
+        var number = num(value, def.value);
+        if (number < def.min) number = def.min;
+        if (number > def.max) number = def.max;
+        out[def.key] = Math.round(number * 100) / 100;
+      } else {
+        var wanted = str(value);
+        var found = "";
+        for (var o = 0; o < def.options.length; o++) {
+          if (def.options[o].value === wanted) found = wanted;
+        }
+        out[def.key] = found || def.value;
+      }
+    }
+    return out;
+  }
+
+  /* FNV-1a, base36: short, stable, dependency-free. Only used to notice that
+     something changed, never as a security hash. */
+  function hashText(text) {
+    var value = 0x811c9dc5;
+    var source = str(text);
+    for (var i = 0; i < source.length; i++) {
+      value ^= source.charCodeAt(i);
+      value = (value + (value << 1) + (value << 4) + (value << 7) + (value << 8) + (value << 24)) >>> 0;
+    }
+    return value.toString(36);
+  }
+
+  /* Everything that changes what a rendered preview would look like. A rename
+     or a new tag does not invalidate the video; a new asset, new bytes or
+     different params do. */
+  function previewSignature(item) {
+    if (!item) return "";
+    var params = item.params && typeof item.params === "object" ? item.params : {};
+    var keys = [];
+    var key;
+    for (key in params) {
+      if (Object.prototype.hasOwnProperty.call(params, key)) keys.push(key);
+    }
+    keys.sort();
+    var parts = [];
+    for (var i = 0; i < keys.length; i++) parts.push(keys[i] + "=" + str(params[keys[i]]));
+    return hashText(
+      str(item.type) + "|" + str(item.asset) + "|" + str(item.bytes) + "|" + parts.join(",")
+    );
+  }
+
+  /* "none"  — no preview file recorded
+     "ready" — a preview exists and was made for these params
+     "stale" — a preview exists but the preset or its params changed since */
+  function previewState(item) {
+    if (!item || !str(item.previewVideo)) return "none";
+    if (!str(item.previewKey)) return "ready";
+    return str(item.previewKey) === previewSignature(item) ? "ready" : "stale";
+  }
+
   /* ------------------------------------------------------------- records */
 
   function normalizeFolder(raw) {
@@ -228,6 +353,9 @@
       lastUsed: str(raw.lastUsed),
       previewVideo: str(raw.previewVideo),
       previewThumb: str(raw.previewThumb),
+      previewKey: str(raw.previewKey),
+      previewAt: str(raw.previewAt),
+      params: normalizeParams(type, raw.params),
       author: cleanText(raw.author, 60) || "You",
       license: cleanText(raw.license, 80),
       notes: cleanText(raw.notes, MAX_NOTES),
@@ -490,6 +618,7 @@
     if (patch.tags !== undefined) item.tags = cleanTags(patch.tags);
     if (patch.favorite !== undefined) item.favorite = bool(patch.favorite);
     if (patch.notes !== undefined) item.notes = cleanText(patch.notes, MAX_NOTES);
+    if (patch.params !== undefined) item.params = normalizeParams(item.type, patch.params);
     if (patch.hostSupport !== undefined) item.hostSupport = cleanHosts(patch.hostSupport, item.type);
     if (patch.folderId !== undefined) {
       var folderId = safeId(patch.folderId);
@@ -503,8 +632,31 @@
     return { item: item };
   }
 
-  function itemsMove(index, payload) {
-    var ids = isArray(payload && payload.ids) ? payload.ids : [];
+  /* Records the preview files and the key they were generated for. Written by
+     the store after ffmpeg has finished, so a half-written preview can never
+     be marked ready. */
+  function itemPreviewSet(index, id, preview) {
+    var item = itemById(index, safeId(id));
+    if (!item) return { error: "That item is no longer in the library." };
+    var data = preview || {};
+    item.previewVideo = safeFileName(data.video, PREVIEW_VIDEO);
+    item.previewThumb = safeFileName(data.thumb, PREVIEW_THUMB);
+    item.previewKey = str(data.key);
+    item.previewAt = str(data.at) || nowText();
+    return { item: item };
+  }
+
+  function itemPreviewClear(index, id) {
+    var item = itemById(index, safeId(id));
+    if (!item) return { error: "That item is no longer in the library." };
+    item.previewVideo = "";
+    item.previewThumb = "";
+    item.previewKey = "";
+    item.previewAt = "";
+    return { item: item };
+  }
+
+  function itemsMove(index, payload) {    var ids = isArray(payload && payload.ids) ? payload.ids : [];
     var folderId = safeId(payload && payload.folderId);
     if (folderId && !folderById(index, folderId)) {
       return { error: "The destination folder no longer exists." };
@@ -1207,6 +1359,17 @@
   return {
     SCHEMA: SCHEMA,
     FORMAT: FORMAT,
+    PREVIEW_VIDEO: PREVIEW_VIDEO,
+    PREVIEW_THUMB: PREVIEW_THUMB,
+    PARAM_DEFS: PARAM_DEFS,
+    paramDefs: paramDefs,
+    paramDefaults: paramDefaults,
+    normalizeParams: normalizeParams,
+    hashText: hashText,
+    previewSignature: previewSignature,
+    previewState: previewState,
+    itemPreviewSet: itemPreviewSet,
+    itemPreviewClear: itemPreviewClear,
     ITEM_FORMAT: ITEM_FORMAT,
     FOLDERS_FORMAT: FOLDERS_FORMAT,
     PACK_FORMAT: PACK_FORMAT,

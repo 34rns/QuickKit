@@ -4,11 +4,12 @@ A free, local-only panel for **Adobe After Effects** and **Adobe Premiere Pro**
 on Windows 10 and 11. One extension, eight tools, no account, no cloud, no
 tracking.
 
-Version **0.7.0** — Part 6A: one shared **Library** for both apps, with nested
-folders, smart collections, search, `.qkpack` sharing and a Repair button. It
-joins the live After Effects tools (anchor, text, layers, easing, presets), the
-Premiere silence cutter, the Bridge, and the Part 1 shell, host test and
-installer.
+Version **0.8.0** — Part 6B: a pinned **preview pane** for the Library. Click a
+card and it plays in place; Apply or double-click puts it on your layers, and
+After Effects can render real previews of your own presets. It joins Part 6A's
+shared library (nested folders, smart collections, search, `.qkpack` sharing,
+Repair), the live After Effects tools (anchor, text, layers, easing, presets),
+the Premiere silence cutter, the Bridge, and the Part 1 shell and installer.
 
 ---
 
@@ -24,6 +25,10 @@ installer.
   nested folders, with smart collections, instant search, filters, grid/list
   views, `.qkpack` export/import and a Repair button. Part 4 presets are
   imported automatically the first time it opens.
+- A **preview pane** pinned above the library grid: click to select and play,
+  arrow keys to browse, Space for play/pause, Enter for the item menu,
+  double-click or Apply to use the item. Cards stay cheap; only the selected
+  item's clip is ever loaded.
 - A **Silence cutter** for Premiere Pro: FFmpeg finds the gaps in the sequence
   audio, you check them on a waveform, then cut them out in one undo step.
 - A **Bridge** between the two apps: send selected Premiere clips to After
@@ -151,10 +156,30 @@ per item holding `item.json`, the asset and any previews.
 - **Nothing fatal.** A corrupt `library.json` is rebuilt from the item folders
   on load; a missing asset is a badge on the card, not a crash. **Repair
   library** rebuilds the index on demand and never deletes an item.
+- **Previews.** Clicking a card selects it and plays its preview in the pinned
+  pane above the grid. Cards keep static thumbnails; only the selected item's
+  clip is loaded, and it is released when you select something else. The pane
+  has play/pause, loop, 0.5x / 1x / 2x speed and a scrub bar, and its height and
+  collapsed state are remembered. **Preview mode** (gear menu) is **Click** by
+  default, with an optional **Hover** mode that previews without changing the
+  selection.
+- **Rendered previews in After Effects.** For `.ffx` and `.qkpreset` items,
+  **Generate this preview** or **Generate missing previews (N)** renders a 2.5 s
+  clip inside After Effects (a throwaway comp through the Render Queue),
+  converts it with the bundled FFmpeg to a ≤480 px silent `.mp4` plus a `.webp`
+  thumbnail, and stores both next to the item. Your project is not saved or
+  changed, and other Render Queue items are restored afterwards. Cancel stops
+  between items, because the panel is blocked while one render runs.
+- **Never a blank card.** Anything without a clip — MOGRTs, Premiere recipes,
+  items with no preview yet — plays a live canvas approximation of the preset
+  (fade, slide, scale, wipe, type-on, blur, rotate) driven by its own
+  parameters. Changing a parameter makes a real clip out of date: the pane says
+  so and offers **Regenerate preview**. A param change never deletes the old
+  file by itself, and **Clear preview cache…** removes only the preview files.
 
-Applying an item to a timeline or layer is **not built yet** — 6A is the store
-and the UI. Saving from the apps and applying (including `.ffx` and `.mogrt`
-handling) arrives in the next parts.
+Applying an item works in **After Effects**: press **Apply**, double-click a
+card, or use the item menu. In Premiere Pro the button reads **Coming in 6D** —
+browsing, folders, packs and previews already work there.
 
 ---
 
@@ -482,8 +507,12 @@ Your own data never goes in the extension folder:
   when After Effects is installed; the success path is still manual).
 - Library tests: `node tests/library.test.js` (real temp folders: schema files,
   Part 4 migration, folders, corrupt-index repair, packs, conflict modes).
+- Preview tests: `node tests/preview.test.js` (clock, easing, approximation,
+  param clamping, signatures, preview files on disk, ffmpeg argument builders
+  and a real encode when `bin/ffmpeg` exists).
 - Browser preview: `node tests/refresh-preview.js` then open
-  `tests/.preview/index.html` (append `?host=PPRO` for the Premiere side) — a
+  `tests/.preview/index.html` (append `?host=PPRO` for the Premiere side; `?many=500`,
+  `?slow=1`, `?empty=1` exercise the large library, cancel and empty states) — a
   fake CEP harness, not shipped.
 - Chrome/CEF in CEP 12 is Chromium 99, so avoid newer CSS
   (`color-mix`, `:has`, container queries).
@@ -496,7 +525,8 @@ Your own data never goes in the extension folder:
   `docs/manual-test-checklist-part4.md`,
   `docs/manual-test-checklist-part5.md`,
   `docs/manual-test-checklist-part6.md`,
-  `docs/manual-test-checklist-part6a.md`.
+  `docs/manual-test-checklist-part6a.md`,
+  `docs/manual-test-checklist-part6b.md`.
 
 ---
 

@@ -192,7 +192,7 @@ if (Object.keys(ids).every(function (id) { return html.indexOf('id="' + id + '"'
 }
 
 /* 8. JavaScript syntax */
-["extension/js/csinterface-lite.js", "extension/js/panel.js", "extension/js/library-core.js", "extension/js/library-io.js", "design/icons/icons.js"].forEach(function (rel) {
+["extension/js/csinterface-lite.js", "extension/js/panel.js", "extension/js/library-core.js", "extension/js/library-io.js", "extension/js/preview-core.js", "extension/js/preview-node.js", "design/icons/icons.js"].forEach(function (rel) {
   if (!exists(rel)) return;
   try {
     execFileSync(process.execPath, ["--check", path.join(ROOT, rel)], { stdio: "pipe" });
@@ -801,6 +801,91 @@ if (exists("docs/manual-test-checklist-part6a.md")) pass("Part 6A manual checkli
 else fail("docs/manual-test-checklist-part6a.md is missing");
 if (/library/i.test(readmeText) && /qkpack/i.test(readmeText)) pass("README documents the library and packs");
 else fail("README does not document the library and .qkpack packs");
+
+/* 32. preview pane, preview files and generation (Part 6B) */
+var previewCoreJs = exists("extension/js/preview-core.js") ? read("extension/js/preview-core.js") : "";
+var previewNodeJs = exists("extension/js/preview-node.js") ? read("extension/js/preview-node.js") : "";
+var hostJs = exists("host/quickkit.jsx") ? read("host/quickkit.jsx") : "";
+
+if (!previewCoreJs) fail("extension/js/preview-core.js is missing");
+else if (!previewNodeJs) fail("extension/js/preview-node.js is missing");
+else pass("preview core and encoder are present");
+
+if (previewCoreJs) {
+  ["sampleAt", "approxFor", "planGeneration", "formatClock", "nextSpeed", "easingFn"].forEach(function (name) {
+    if (!new RegExp("function\\s+" + name + "\\s*\\(").test(previewCoreJs)) {
+      fail("preview-core.js is missing " + name + "()");
+    }
+  });
+  if (/function\s+sampleAt\s*\(/.test(previewCoreJs) && /function\s+planGeneration\s*\(/.test(previewCoreJs)) {
+    pass("preview-core.js has the sampling and batch-planning functions");
+  }
+}
+
+if (previewNodeJs && previewNodeJs.indexOf("libx264") === -1) fail("preview-node.js does not encode h.264");
+else if (previewNodeJs) pass("preview-node.js encodes the preview clip");
+
+if (html.indexOf('src="js/preview-core.js"') === -1) fail("index.html does not load preview-core.js");
+else pass("index.html loads preview-core.js");
+
+/* Node-only modules must never reach the page: they require fs and spawn. */
+var leakedModules = ["js/preview-node.js", "js/library-io.js", "js/ffmpeg-node.js"].filter(function (rel) {
+  return html.indexOf('src="' + rel + '"') !== -1;
+});
+if (leakedModules.length) fail("index.html loads Node-only modules: " + leakedModules.join(", "));
+else pass("Node-only modules stay out of index.html");
+
+var previewIds = [
+  "qk-lib-preview", "qk-lib-preview-video", "qk-lib-preview-canvas", "qk-lib-preview-scrub",
+  "qk-lib-preview-settings", "qk-lib-preview-play", "qk-lib-preview-apply", "qk-lib-preview-generate"
+];
+var previewIdsMissing = previewIds.filter(function (id) {
+  return html.indexOf('id="' + id + '"') === -1;
+});
+if (previewIdsMissing.length) fail("index.html is missing preview ids: " + previewIdsMissing.join(", "));
+else pass("the preview pane has its stage, transport and action ids");
+
+if (html.indexOf('id="qk-lib-preview"') > html.indexOf('id="qk-lib-items"')) {
+  fail("the preview pane sits below the item grid; it must stay pinned above it");
+} else if (html.indexOf('id="qk-lib-preview"') >= 0 && html.indexOf('id="qk-lib-items"') >= 0) {
+  pass("the preview pane is pinned above the item grid");
+}
+
+if (hostJs) {
+  if (!/function\s+qkLibraryApply\s*\(/.test(hostJs)) fail("host has no qkLibraryApply()");
+  if (!/function\s+qkPreviewGenerate\s*\(/.test(hostJs)) fail("host has no qkPreviewGenerate()");
+  if (/function\s+qkLibraryApply\s*\(/.test(hostJs) && /function\s+qkPreviewGenerate\s*\(/.test(hostJs)) {
+    pass("host exposes qkLibraryApply() and qkPreviewGenerate()");
+  }
+
+  var generateStart = hostJs.indexOf("function qkPreviewGenerate");
+  if (generateStart >= 0) {
+    var generateBody = hostJs.slice(generateStart);
+    if (generateBody.indexOf("queue.render()") === -1) {
+      fail("qkPreviewGenerate does not render through queue.render()");
+    } else if (generateBody.indexOf("aerender") !== -1) {
+      fail("qkPreviewGenerate uses aerender; the Render Queue must render the open project");
+    } else {
+      pass("qkPreviewGenerate renders the open project with the Render Queue, never aerender");
+    }
+  }
+}
+
+["play", "pause"].forEach(function (name) {
+  if (!definedIcons[name]) fail("the preview transport needs the \"" + name + "\" icon");
+});
+if (definedIcons.play && definedIcons.pause) pass("play and pause icons exist");
+
+var tokensCss = exists("design/tokens.css") ? read("design/tokens.css") : "";
+if (tokensCss.indexOf("--qk-lib-preview-stage-h") === -1) fail("tokens.css has no preview stage height token");
+else pass("tokens.css carries the preview pane tokens");
+
+if (exists("tests/preview.test.js")) pass("preview test suite is present");
+else fail("tests/preview.test.js is missing");
+if (exists("docs/manual-test-checklist-part6b.md")) pass("Part 6B manual checklist is present");
+else fail("docs/manual-test-checklist-part6b.md is missing");
+if (/preview/i.test(readmeText) && /ffmpeg/i.test(readmeText)) pass("README documents previews and the bundled ffmpeg");
+else fail("README does not document previews and the bundled ffmpeg");
 
 /* report */
 passes.forEach(function (message) { console.log("PASS  " + message); });

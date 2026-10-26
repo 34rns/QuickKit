@@ -217,6 +217,17 @@
   --qk-lib-scroll-max: 220px;
   --qk-lib-gap: var(--qk-space-2);
 
+  /* Library preview (Part 6B) */
+  --qk-lib-preview-bg: var(--qk-surface);
+  --qk-lib-preview-stage-bg: var(--qk-bg);
+  --qk-lib-preview-stage-h: 180px;
+  --qk-lib-preview-stage-min: 96px;
+  --qk-lib-preview-stage-max: 420px;
+  --qk-lib-preview-resize-h: 8px;
+  --qk-lib-preview-chip-bg: var(--qk-surface-raised);
+  --qk-lib-preview-overlay: var(--qk-backdrop);
+  --qk-lib-preview-text-stage: 34px;
+
   /* Layers */
   --qk-z-tooltip: 40;
   --qk-z-overlay: 30;

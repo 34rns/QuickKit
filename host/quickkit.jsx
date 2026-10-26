@@ -3142,24 +3142,9 @@ function qkPresetApplyText(layer, style) {
   return "";
 }
 
-function qkPresetApply(id) {
-  var presetId = qkStr(id);
-  if (!qkPresetSafeId(presetId)) {
-    return qkErr("Unknown preset. Reload the list and try again.");
-  }
-
-  var root = qkPresetRootPath();
-  if (root === "") return qkErr("QuickKit could not find your AppData folder.");
-  var loaded = qkPresetLoadOne(root, presetId);
-  if (loaded.error) return qkErr(loaded.error);
-  var preset = loaded.preset;
-
-  var ctx = qkGetComp();
-  if (ctx.error) return qkErr(ctx.error);
-  var selection = qkSelectedLayers(ctx.comp);
-  if (selection.error) return qkErr(selection.error);
-
-  var selected = selection.layers;
+/* Applies one normalized preset to the given layers. The undo group belongs to
+   the caller: the preview generator must not add entries to the user's undo. */
+function qkPresetApplyLayers(preset, selected) {
   var saved = preset.layers;
   var targets = [];
   var i;
@@ -3177,7 +3162,6 @@ function qkPresetApply(id) {
   var appliedLayers = 0;
   var appliedProps = 0;
   var applyError = "";
-  var started = qkBeginUndo("QuickKit: Apply preset");
 
   try {
   for (i = 0; i < targets.length; i++) {
@@ -3232,22 +3216,50 @@ function qkPresetApply(id) {
     applyError = qkErrText(eApply);
   }
 
-  qkEndUndo(started);
+  return {
+    appliedLayers: appliedLayers,
+    appliedProps: appliedProps,
+    notes: notes,
+    error: applyError,
+    targets: targets.length
+  };
+}
 
-  if (applyError !== "") {
-    return qkErr("Applying the preset stopped: " + applyError + ".");
+function qkPresetApply(id) {
+  var presetId = qkStr(id);
+  if (!qkPresetSafeId(presetId)) {
+    return qkErr("Unknown preset. Reload the list and try again.");
   }
 
-  if (appliedLayers === 0) {
+  var root = qkPresetRootPath();
+  if (root === "") return qkErr("QuickKit could not find your AppData folder.");
+  var loaded = qkPresetLoadOne(root, presetId);
+  if (loaded.error) return qkErr(loaded.error);
+  var preset = loaded.preset;
+
+  var ctx = qkGetComp();
+  if (ctx.error) return qkErr(ctx.error);
+  var selection = qkSelectedLayers(ctx.comp);
+  if (selection.error) return qkErr(selection.error);
+
+  var started = qkBeginUndo("QuickKit: Apply preset");
+  var result = qkPresetApplyLayers(preset, selection.layers);
+  qkEndUndo(started);
+
+  if (result.error !== "") {
+    return qkErr("Applying the preset stopped: " + result.error + ".");
+  }
+
+  if (result.appliedLayers === 0) {
     var failed = "Nothing was applied from \"" + preset.name + "\".";
-    if (notes.length) failed += " " + qkJoin(notes) + ".";
+    if (result.notes.length) failed += " " + qkJoin(result.notes) + ".";
     return qkErr(failed);
   }
 
   var message =
-    "Applied \"" + preset.name + "\" to " + qkPlural(appliedLayers, "layer", "layers") +
-    " (" + qkPlural(appliedProps, "property", "properties") + ").";
-  if (notes.length) message += " " + qkJoin(notes) + ".";
+    "Applied \"" + preset.name + "\" to " + qkPlural(result.appliedLayers, "layer", "layers") +
+    " (" + qkPlural(result.appliedProps, "property", "properties") + ").";
+  if (result.notes.length) message += " " + qkJoin(result.notes) + ".";
   return qkOk(message);
 }
 
@@ -6414,5 +6426,359 @@ function qkBridgeInfo() {
     aerender: qkBridgeAerenderPath(),
     handoff: false,
     message: "File handoff, not Dynamic Link: nothing crosses the apps until you press a button."
+  });
+}
+/* ============================================================
+ * Library apply + preview generation (Part 6B)
+ *
+ * qkLibraryApply    — applies one library item to the current selection.
+ * qkPreviewGenerate — renders a throwaway comp into PNG frames for ffmpeg.
+ *
+ * Why the Render Queue and not aerender: aerender only renders a saved .aep,
+ * so using it would mean saving (or Save-As-ing) the user's project just to
+ * throw that copy away afterwards. The queue renders the open, unsaved project
+ * as it stands, the temp comp never leaves the project, and every other queue
+ * item is switched off and restored in a finally block. The cost is that the
+ * call blocks for one short render, so a batch can only be cancelled between
+ * items.
+ * ============================================================ */
+
+var QK_PREVIEW_WIDTH = 1920;
+var QK_PREVIEW_HEIGHT = 1080;
+var QK_PREVIEW_FPS = 24;
+var QK_PREVIEW_SECONDS = 2.5;
+var QK_PREVIEW_MAX_FRAMES = 150;
+
+function qkPreviewNumber(value, fallback, low, high) {
+  var number = qkPresetNumber(value, fallback);
+  if (number < low) number = low;
+  if (number > high) number = high;
+  return number;
+}
+
+/* Reads a .qkpreset straight from a library item folder. */
+function qkPreviewReadPreset(filePath) {
+  var text = qkFileRead(filePath, QK_PRESET_MAX_BYTES);
+  if (text === null) return { error: "That preset file is missing from the library folder." };
+  var raw = null;
+  try {
+    raw = qkJsonParse(text);
+  } catch (eParse) {
+    return { error: "That preset file is damaged." };
+  }
+  var normalized = qkPresetNormalize(raw, "");
+  if (normalized.error) return { error: "That preset file is damaged." };
+  return { preset: normalized.preset };
+}
+
+/* Applies a saved .ffx effect preset to the given layers. */
+function qkPreviewApplyFfx(filePath, selected) {
+  var file = new File(filePath);
+  if (!file || !file.exists) return { error: "The .ffx file is missing from the library folder." };
+  var applied = 0;
+  var notes = [];
+  for (var i = 0; i < selected.length; i++) {
+    var layer = selected[i];
+    if (layer.locked) {
+      notes.push(qkStr(layer.name) + " is locked");
+      continue;
+    }
+    try {
+      layer.applyPreset(file);
+      applied++;
+    } catch (eApply) {
+      notes.push(qkStr(layer.name) + ": " + qkErrText(eApply));
+    }
+  }
+  return { applied: applied, notes: notes };
+}
+
+/* payload: { kind: "qkpreset"|"ffx", path, name } */
+function qkLibraryApply(payloadJson) {
+  if (qkHostId() !== "AEFT") return qkErr("Applying library items in Premiere Pro arrives in part 6D.");
+  var payload = null;
+  try {
+    payload = qkJsonParse(qkStr(payloadJson));
+  } catch (ePayload) {
+    return qkErr("QuickKit could not read that item.");
+  }
+  if (!payload || typeof payload !== "object") return qkErr("QuickKit could not read that item.");
+
+  var kind = qkStr(payload.kind);
+  var filePath = qkStr(payload.path);
+  var itemName = qkPresetCleanText(payload.name, 60) || "that item";
+  if (filePath === "") return qkErr("The item file is missing from the library folder.");
+  if (kind !== "qkpreset" && kind !== "ffx") {
+    return qkErr("QuickKit cannot apply that kind of item in After Effects yet.");
+  }
+
+  var ctx = qkGetComp();
+  if (ctx.error) return qkErr(ctx.error);
+  var selection = qkSelectedLayers(ctx.comp);
+  if (selection.error) return qkErr(selection.error);
+
+  var started = qkBeginUndo("QuickKit: Apply library item");
+  var applied = 0;
+  var checked = 0;
+  var notes = [];
+  var failure = "";
+
+  try {
+    if (kind === "qkpreset") {
+      var loaded = qkPreviewReadPreset(filePath);
+      if (loaded.error) {
+        failure = loaded.error;
+      } else {
+        var result = qkPresetApplyLayers(loaded.preset, selection.layers);
+        applied = result.appliedLayers;
+        checked = result.appliedProps;
+        notes = result.notes;
+        failure = result.error;
+      }
+    } else {
+      var ffx = qkPreviewApplyFfx(filePath, selection.layers);
+      if (ffx.error) failure = ffx.error;
+      else {
+        applied = ffx.applied;
+        notes = ffx.notes;
+      }
+    }
+  } catch (eApply2) {
+    failure = qkErrText(eApply2);
+  }
+
+  qkEndUndo(started);
+
+  if (failure !== "") return qkErr("Applying stopped: " + failure + ".");
+  if (applied === 0) {
+    var why = "Nothing was applied from \"" + itemName + "\".";
+    if (notes.length) why += " " + qkJoin(notes) + ".";
+    return qkErr(why);
+  }
+
+  var message = "Applied \"" + itemName + "\" to " + qkPlural(applied, "layer", "layers");
+  if (checked > 0) message += " (" + qkPlural(checked, "property", "properties") + ")";
+  message += ".";
+  if (notes.length) message += " " + qkJoin(notes) + ".";
+  return qkOk(message);
+}
+
+/* A real PNG check: a wrong output-module template can write JPEG bytes into
+   a .png name, and those would fail silently in ffmpeg. */
+function qkPreviewIsPng(file) {
+  var handle = new File(file);
+  if (!handle || !handle.exists) return false;
+  var ok = false;
+  try {
+    handle.encoding = "BINARY";
+    if (handle.open("r")) {
+      var head = handle.read(4);
+      handle.close();
+      ok =
+        head && head.length === 4 &&
+        head.charCodeAt(0) === 137 && head.charCodeAt(1) === 80 &&
+        head.charCodeAt(2) === 78 && head.charCodeAt(3) === 71;
+    }
+  } catch (eRead) {
+    ok = false;
+  }
+  return ok;
+}
+
+function qkPreviewPngNames(dir) {
+  var names = [];
+  var folder = null;
+  try {
+    folder = new Folder(dir);
+  } catch (eFolder) {
+    return names;
+  }
+  if (!folder || !folder.exists) return names;
+  var listed = null;
+  try {
+    listed = folder.getFiles("*.png");
+  } catch (eList) {
+    return names;
+  }
+  for (var i = 0; i < listed.length; i++) {
+    if (listed[i] instanceof Folder) continue;
+    names.push(qkStr(listed[i].name));
+  }
+  names.sort();
+
+  var out = [];
+  for (var k = 0; k < names.length; k++) {
+    if (qkPreviewIsPng(dir + "/" + names[k])) out.push(names[k]);
+  }
+  return out;
+}
+
+/* Centres a text layer on its own box, so the word sits in the middle whatever
+   the font metrics are. */
+function qkPreviewCenterText(layer, comp) {
+  try {
+    var group = layer.property("ADBE Transform Group");
+    var rect = layer.sourceRectAtTime(0, false);
+    group.property("ADBE Anchor Point").setValue([rect.left + rect.width / 2, rect.top + rect.height / 2]);
+    group.property("ADBE Position").setValue([comp.width / 2, comp.height / 2]);
+  } catch (eCenter) {
+    /* a preset without transform still renders; centring is best effort */
+  }
+}
+
+/* payload: { name, kind, path, dir, width?, height?, fps?, seconds? }
+   Returns the PNG frame names (not paths) so the JSON stays small. */
+function qkPreviewGenerate(payloadJson) {
+  if (qkHostId() !== "AEFT") {
+    return qkErr("Preview generation runs in After Effects. In Premiere Pro the previews are read-only.");
+  }
+  var payload = null;
+  try {
+    payload = qkJsonParse(qkStr(payloadJson));
+  } catch (ePayload) {
+    return qkErr("QuickKit could not read that request.");
+  }
+  if (!payload || typeof payload !== "object") return qkErr("QuickKit could not read that request.");
+
+  var name = qkPresetCleanText(payload.name, 60) || "QuickKit preview";
+  var kind = qkStr(payload.kind);
+  var filePath = qkStr(payload.path);
+  var dir = qkTrim(qkStr(payload.dir));
+  if (kind !== "qkpreset" && kind !== "ffx") return qkErr("That item cannot be previewed by rendering.");
+  if (dir === "") return qkErr("QuickKit did not get a folder for the preview frames.");
+  if (!app.project) return qkErr("Open a project in After Effects first.");
+
+  if (kind === "qkpreset") {
+    var loaded = qkPreviewReadPreset(filePath);
+    if (loaded.error) return qkErr(loaded.error);
+  } else {
+    var ffxFile = new File(filePath);
+    if (!ffxFile || !ffxFile.exists) return qkErr("The .ffx file is missing from the library folder.");
+  }
+
+  var folder = new Folder(dir);
+  if (!folder.exists && !folder.create()) {
+    return qkErr("QuickKit could not create the temp folder for the preview frames.");
+  }
+
+  var width = qkPreviewNumber(payload.width, QK_PREVIEW_WIDTH, 320, 3840);
+  var height = qkPreviewNumber(payload.height, QK_PREVIEW_HEIGHT, 240, 2160);
+  var fps = qkPreviewNumber(payload.fps, QK_PREVIEW_FPS, 6, 60);
+  var seconds = qkPreviewNumber(payload.seconds, QK_PREVIEW_SECONDS, 2, 4);
+
+  var queue = app.project.renderQueue;
+  if (queue.queueInProgress) {
+    return qkErr("After Effects is already rendering. Wait for that render to finish, then try again.");
+  }
+
+  var comp = null;
+  var item = null;
+  var restore = [];
+  var frames = [];
+  var method = "render-queue";
+  var appliedLayers = 0;
+  var appliedProps = 0;
+  var applyNotes = [];
+  var failure = "";
+
+  try {
+    comp = app.project.items.addComp("QuickKit preview - " + name, width, height, 1, seconds, fps);
+    comp.bgColor = [0.055, 0.063, 0.078];
+
+    comp.layers.addSolid([0.055, 0.063, 0.078], "Backdrop", width, height, 1);
+
+    var textLayer = comp.layers.addText(name);
+    var textProp = textLayer.property("ADBE Text Properties").property("ADBE Text Document");
+    var doc = textProp.value;
+    doc.fontSize = Math.round(height * 0.1);
+    doc.fillColor = [0.94, 0.95, 0.97];
+    doc.applyFill = true;
+    doc.applyStroke = false;
+    textProp.setValue(doc);
+    qkPreviewCenterText(textLayer, comp);
+
+    if (kind === "qkpreset") {
+      var applied = qkPresetApplyLayers(loaded.preset, [textLayer]);
+      appliedLayers = applied.appliedLayers;
+      appliedProps = applied.appliedProps;
+      applyNotes = applied.notes;
+      if (applied.error !== "") failure = applied.error;
+    } else {
+      var ffxApplied = qkPreviewApplyFfx(filePath, [textLayer]);
+      if (ffxApplied.error) failure = ffxApplied.error;
+      else appliedLayers = ffxApplied.applied;
+    }
+    if (failure === "" && appliedLayers === 0) {
+      failure = "The preset changed nothing on a plain text layer.";
+    }
+
+    if (failure === "") {
+      item = queue.items.add(comp);
+      try {
+        item.outputModule(1).applyTemplate("PNG Sequence");
+      } catch (eTemplate) {
+        /* English template missing: the .png extension below still picks PNG. */
+      }
+      item.outputModule(1).file = new File(dir + "/preview_00000.png");
+
+      for (var q = 1; q <= queue.items.length; q++) {
+        var other = queue.items[q];
+        if (other === item) continue;
+        restore.push({ item: other, render: other.render });
+        other.render = false;
+      }
+
+      queue.render();
+      frames = qkPreviewPngNames(dir);
+
+      if (!frames.length) {
+        method = "save-frame";
+        var count = Math.round(seconds * fps);
+        if (count > QK_PREVIEW_MAX_FRAMES) count = QK_PREVIEW_MAX_FRAMES;
+        for (var f = 0; f < count; f++) {
+          comp.saveFrameToPng(f / fps, new File(dir + "/frame_" + qkPad(f, 5) + ".png"));
+        }
+        frames = qkPreviewPngNames(dir);
+      }
+      if (!frames.length) failure = "After Effects rendered no frames for this preset.";
+    }
+  } catch (eGenerate) {
+    failure = qkErrText(eGenerate);
+  } finally {
+    for (var r = 0; r < restore.length; r++) {
+      try {
+        restore[r].item.render = restore[r].render;
+      } catch (eRestore) {}
+    }
+    if (item) {
+      try {
+        item.remove();
+      } catch (eRemoveItem) {}
+    }
+    if (comp) {
+      try {
+        comp.remove();
+      } catch (eRemoveComp) {}
+    }
+  }
+
+  if (failure !== "") return qkErr("Preview generation stopped: " + failure + ".");
+
+  return qkJsonStringify({
+    ok: true,
+    dir: dir,
+    frames: frames,
+    fps: fps,
+    width: width,
+    height: height,
+    seconds: Math.round((frames.length / fps) * 100) / 100,
+    method: method,
+    appliedLayers: appliedLayers,
+    appliedProps: appliedProps,
+    notes: applyNotes,
+    message:
+      "Rendered " + qkPlural(frames.length, "frame", "frames") + " with the Render Queue" +
+      (method === "save-frame" ? " (fallback: Save Frame as PNG)" : "") +
+      (applyNotes.length ? ". " + qkJoin(applyNotes) + "." : ".")
   });
 }

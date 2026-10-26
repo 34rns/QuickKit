@@ -1611,3 +1611,304 @@
   border-bottom: var(--qk-border-width) solid var(--qk-border);
   overflow-wrap: anywhere;
 }
+
+/* ------------------------------------------------------ Library preview (6B) */
+
+.qk-lib-preview {
+  position: sticky;
+  top: calc(var(--qk-space-4) * -1);
+  z-index: 5;
+  display: grid;
+  gap: var(--qk-space-2);
+  padding: var(--qk-space-2) var(--qk-space-2) 0;
+  background: var(--qk-lib-preview-bg);
+  border: var(--qk-border-width) solid var(--qk-border);
+  border-radius: var(--qk-radius-md);
+}
+
+.qk-lib-preview[data-collapsed="true"] .qk-lib-preview__body,
+.qk-lib-preview[data-collapsed="true"] .qk-lib-preview__resize {
+  display: none;
+}
+
+.qk-lib-preview__head {
+  display: flex;
+  align-items: center;
+  gap: var(--qk-space-2);
+}
+
+.qk-lib-preview__kicker {
+  color: var(--qk-muted);
+  font-size: var(--qk-fs-11);
+  font-weight: var(--qk-fw-medium);
+  letter-spacing: var(--qk-tracking-caps);
+  text-transform: uppercase;
+}
+
+.qk-lib-preview__mode {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--qk-muted);
+  font-size: var(--qk-fs-11);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qk-lib-preview__headbtns {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--qk-space-1);
+}
+
+.qk-lib-preview__headbtn {
+  width: var(--qk-control-h-sm);
+  height: var(--qk-control-h-sm);
+}
+
+.qk-lib-preview__stage {
+  position: relative;
+  display: grid;
+  place-items: center;
+  height: var(--qk-lib-preview-stage-h);
+  background: var(--qk-lib-preview-stage-bg);
+  border-radius: var(--qk-radius-sm);
+  overflow: hidden;
+}
+
+.qk-lib-preview__video,
+.qk-lib-preview__canvas {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--qk-lib-preview-stage-bg);
+}
+
+.qk-lib-preview__empty {
+  display: grid;
+  place-items: center;
+  gap: var(--qk-space-2);
+  padding: var(--qk-space-3);
+  text-align: center;
+}
+
+.qk-lib-preview__empty-icon {
+  display: inline-flex;
+  color: var(--qk-muted);
+}
+
+.qk-lib-preview__empty-text {
+  max-width: 34ch;
+  margin: 0;
+  color: var(--qk-muted);
+  font-size: var(--qk-fs-12);
+  line-height: var(--qk-lh-base);
+}
+
+.qk-lib-preview__busy {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: var(--qk-space-2);
+  padding: var(--qk-space-3);
+  background: var(--qk-lib-preview-overlay);
+  text-align: center;
+}
+
+.qk-lib-preview__busy-text {
+  color: var(--qk-text);
+  font-size: var(--qk-fs-12);
+}
+
+.qk-lib-preview__controls {
+  display: flex;
+  align-items: center;
+  gap: var(--qk-space-1);
+}
+
+.qk-lib-preview__ctl {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  height: var(--qk-control-h-sm);
+  min-width: var(--qk-control-h-sm);
+  padding: 0 var(--qk-space-1);
+  background: transparent;
+  border: var(--qk-border-width) solid transparent;
+  border-radius: var(--qk-radius-sm);
+  color: var(--qk-muted);
+  font-size: var(--qk-fs-11);
+  cursor: pointer;
+}
+
+.qk-lib-preview__ctl:hover:not(:disabled) {
+  color: var(--qk-text);
+  border-color: var(--qk-border);
+}
+
+.qk-lib-preview__ctl[aria-pressed="true"] {
+  color: var(--qk-text);
+  border-color: var(--qk-border-strong);
+}
+
+.qk-lib-preview__ctl:disabled {
+  opacity: var(--qk-btn-disabled-opacity);
+  cursor: default;
+}
+
+.qk-lib-preview__ctl--text {
+  font-variant-numeric: tabular-nums;
+}
+
+.qk-lib-preview__scrub {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.qk-lib-preview__clock {
+  flex: 0 0 auto;
+  color: var(--qk-muted);
+  font-family: var(--qk-font-mono);
+  font-size: var(--qk-fs-11);
+}
+
+.qk-lib-preview__meta {
+  display: grid;
+  gap: var(--qk-space-1);
+}
+
+.qk-lib-preview__titlerow {
+  display: flex;
+  align-items: center;
+  gap: var(--qk-space-2);
+  min-width: 0;
+}
+
+.qk-lib-preview__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: var(--qk-text);
+  font-size: var(--qk-fs-13);
+  font-weight: var(--qk-fw-semibold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qk-lib-preview__badge {
+  flex: 0 0 auto;
+  padding: 0 var(--qk-space-2);
+  background: var(--qk-lib-preview-chip-bg);
+  border: var(--qk-border-width) solid var(--qk-border);
+  border-radius: var(--qk-radius-pill);
+  color: var(--qk-muted);
+  font-size: var(--qk-fs-11);
+  line-height: var(--qk-control-h-sm);
+}
+
+.qk-lib-preview__host {
+  margin: 0;
+  color: var(--qk-muted);
+  font-size: var(--qk-fs-11);
+}
+
+.qk-lib-preview__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--qk-space-1);
+}
+
+.qk-lib-preview__tag {
+  padding: 0 var(--qk-space-2);
+  background: var(--qk-lib-preview-chip-bg);
+  border-radius: var(--qk-radius-pill);
+  color: var(--qk-muted);
+  font-size: var(--qk-fs-11);
+}
+
+.qk-lib-preview__actions {
+  display: flex;
+  gap: var(--qk-space-2);
+}
+
+.qk-lib-preview__note {
+  margin: 0;
+  color: var(--qk-muted);
+  font-size: var(--qk-fs-11);
+  line-height: var(--qk-lh-base);
+}
+
+.qk-lib-preview__params {
+  display: grid;
+  gap: var(--qk-space-2);
+  padding-top: var(--qk-space-2);
+  border-top: var(--qk-border-width) solid var(--qk-border);
+}
+
+.qk-lib-preview__param {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  align-items: center;
+  gap: var(--qk-space-2);
+}
+
+.qk-lib-preview__param-label {
+  color: var(--qk-muted);
+  font-size: var(--qk-fs-11);
+}
+
+.qk-lib-preview__param-value {
+  color: var(--qk-muted);
+  font-family: var(--qk-font-mono);
+  font-size: var(--qk-fs-11);
+}
+
+.qk-lib-preview__param input[type="range"] {
+  width: 100%;
+}
+
+.qk-lib-preview__regen {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--qk-space-2);
+  padding-bottom: var(--qk-space-2);
+}
+
+.qk-lib-preview__regen-text {
+  color: var(--qk-muted);
+  font-size: var(--qk-fs-11);
+}
+
+.qk-lib-preview__resize {
+  height: var(--qk-lib-preview-resize-h);
+  cursor: ns-resize;
+  border-radius: 0 0 var(--qk-radius-md) var(--qk-radius-md);
+}
+
+.qk-lib-preview__resize:hover,
+.qk-lib-preview__resize:focus-visible {
+  background: var(--qk-accent-soft);
+}
+
+.qk-lib-preview[data-state="empty"] .qk-lib-preview__controls,
+.qk-lib-preview[data-state="empty"] .qk-lib-preview__params,
+.qk-lib-preview[data-state="empty"] .qk-lib-preview__regen {
+  display: none;
+}
+
+/* The item currently in the preview pane. A ring, never a colour change, so it
+   reads as "this is what the pane is showing" and not as a second selection. */
+.qk-lib-card.is-previewed {
+  border-color: var(--qk-accent);
+  box-shadow: 0 0 0 var(--qk-border-width) var(--qk-accent) inset;
+}
+
+.qk-lib-card.is-previewed .qk-lib-card__name {
+  color: var(--qk-text);
+}

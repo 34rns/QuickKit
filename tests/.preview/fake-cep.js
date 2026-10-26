@@ -300,7 +300,9 @@
       }
 
       callback(JSON.stringify(reply));
-    }, 8);
+      /* ?slow=1 makes preview generation take long enough to press Cancel in
+         the browser harness; everything else stays snappy. */
+    }, query.indexOf("slow=1") !== -1 && script.indexOf("qkPreviewGenerate") === 0 ? 400 : 8);
   }
 
   /* ---------------------------------------------------------- fake library
@@ -356,15 +358,73 @@
 
   var libMissing = ["l7"];
 
+  /* Preview records, keyed by item id. The real store keeps preview.mp4 and
+     thumb.webp inside the item folder; here they are two shared fixture files
+     under tests/.preview/fixtures.
+       ready — files exist and the key matches the params
+       stale — files exist but the key is from older params
+       gone  — recorded in the index, files deleted from disk */
+  var libPreviews = {
+    l2: { video: "preview.mp4", thumb: "thumb.webp" },
+    l4: { video: "preview.mp4", thumb: "thumb.webp", stale: true },
+    l9: { video: "preview.mp4", thumb: "thumb.webp", gone: true }
+  };
+
   /* ?empty=1 proves the first-run empty state without touching the seeds. */
   if (query.indexOf("empty=1") !== -1) {
     libItems = [];
     libMissing = [];
+    libPreviews = {};
+  }
+
+  /* ?many=500 fills the grid to check lazy thumbnails and that only the
+     selected item's video is ever loaded. */
+  var manyMatch = /many=(\d+)/.exec(query);
+  if (manyMatch) {
+    var manyTotal = Math.min(2000, parseInt(manyMatch[1], 10) || 500);
+    libItems = [];
+    libPreviews = {};
+    libMissing = [];
+    for (var m = 0; m < manyTotal; m++) {
+      libItems.push(
+        libItem("m" + m, "Bulk item " + (m + 1), m % 5 === 0 ? "mogrt" : "ae-preset", "Bulk", ["bulk"], "", {
+          thumbnail: { glyph: "B", color: [0.486, 0.361, 1], motion: m % 3 === 0 },
+          layerCount: 1,
+          propCount: 2,
+          summary: "Bulk test item"
+        })
+      );
+      libPreviews["m" + m] = { video: "preview.mp4", thumb: "thumb.webp" };
+    }
+  }
+
+  function libPreviewGone() {
+    var out = [];
+    for (var id in libPreviews) {
+      if (Object.prototype.hasOwnProperty.call(libPreviews, id) && libPreviews[id].gone) out.push(id);
+    }
+    return out;
   }
 
   function libNormalized() {
     var core = window.QKLibraryCore;
-    return core.normalizeIndex({ schemaVersion: 1, folders: libFolders, items: libItems });
+    var index = core.normalizeIndex({ schemaVersion: 1, folders: libFolders, items: libItems });
+    for (var i = 0; i < index.items.length; i++) {
+      var item = index.items[i];
+      var rec = libPreviews[item.id];
+      item.previewVideo = "";
+      item.previewThumb = "";
+      item.previewKey = "";
+      if (!rec) continue;
+      item.previewVideo = rec.video || "";
+      item.previewThumb = rec.thumb || "";
+      /* The key is frozen the first time the record is seen, exactly like the
+         real store: later param changes make it stale instead of silently
+         re-signing the same files. */
+      if (!rec.stale && !rec.key) rec.key = core.previewSignature(item);
+      item.previewKey = rec.stale ? "older-params" : rec.key;
+    }
+    return index;
   }
 
   function libRemember(index) {
@@ -378,6 +438,7 @@
       root: libRoot,
       index: index,
       missing: libMissing.slice(0),
+      previewsGone: libPreviewGone(),
       status: { created: false, repaired: false, newer: false, migrated: null, skipped: [] }
     };
     for (var key in extra || {}) {
@@ -502,17 +563,80 @@
     itemAdd: function () {
       return { ok: false, error: "The preview library cannot add files." };
     },
-    itemDirectory: function () {
-      return "";
+    itemDirectory: function (id) {
+      return libRoot + "/" + id;
     },
-    itemFileUrl: function () {
-      /* Deliberately undecodable, so the card must fall back to its type
-         glyph. A file:// URL would be blocked by the browser and fill the
-         console; this fails quietly in the <img> only. */
+    /* A preview item points at the shared fixture files; anything else keeps
+       the undecodable data URL so the card falls back to its type glyph. */
+    itemFileUrl: function (id, file) {
+      var rec = libPreviews[id];
+      if (rec && !rec.gone && file) {
+        return /\.webp$/i.test(String(file)) ? "fixtures/thumb.webp" : "fixtures/preview.mp4";
+      }
       return "data:image/png;base64,Qk9ndXM=";
     },
     itemAssetUrl: function () {
       return "";
+    },
+    itemAssetPath: function (id) {
+      var core = window.QKLibraryCore;
+      var item = core.itemById(libNormalized(), id);
+      if (!item) return "";
+      return libRoot + "/" + item.id + "/" + item.asset;
+    },
+    previewTempDir: function (id) {
+      return "C:/Users/Test/AppData/Local/Temp/QuickKit/preview-" + id;
+    },
+    previewCleanup: function () {
+      return true;
+    },
+    previewsSave: function (payload) {
+      var data = payload || {};
+      var id = String(data.id || "");
+      if (!id) return { ok: false, error: "That item is no longer in the library." };
+      var saved = libChange(function (index) {
+        var core = window.QKLibraryCore;
+        var item = core.itemById(index, id);
+        if (!item) return { error: "That item is no longer in the library." };
+        return core.itemPreviewSet(index, id, {
+          video: "preview.mp4",
+          thumb: "thumb.webp",
+          key: core.previewSignature(item)
+        });
+      });
+      if (!saved.ok) return saved;
+      libPreviews[id] = { video: "preview.mp4", thumb: "thumb.webp", key: saved.item ? saved.item.previewKey : "" };
+      saved.videoUrl = "fixtures/preview.mp4";
+      saved.thumbUrl = "fixtures/thumb.webp";
+      saved.key = saved.item ? saved.item.previewKey : "";
+      return saved;
+    },
+    previewsClear: function (payload) {
+      var wanted = payload && payload.ids && payload.ids.length ? payload.ids : null;
+      var cleared = 0;
+      for (var id in libPreviews) {
+        if (!Object.prototype.hasOwnProperty.call(libPreviews, id)) continue;
+        if (wanted && wanted.indexOf(id) < 0) continue;
+        delete libPreviews[id];
+        cleared++;
+      }
+      return { ok: true, cleared: cleared, index: libNormalized() };
+    },
+    previewsInfo: function () {
+      var core = window.QKLibraryCore;
+      var index = libNormalized();
+      var info = { ok: true, total: index.items.length, ready: 0, stale: 0, none: 0, bytes: 0, clearable: 0 };
+      for (var i = 0; i < index.items.length; i++) {
+        var state = core.previewState(index.items[i]);
+        if (state === "ready") info.ready++;
+        else if (state === "stale") info.stale++;
+        else info.none++;
+        if (libPreviews[index.items[i].id]) {
+          info.clearable++;
+          info.bytes += 240000;
+        }
+      }
+      return info;
     },
     rootUrl: function () {
       return "";

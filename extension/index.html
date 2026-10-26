@@ -452,6 +452,72 @@
       <section class="qk-panel qk-panel--library" id="qk-panel-library" data-panel="library" aria-label="Library" hidden>
         <p class="qk-panel__lead">One library for both apps: presets, MOGRTs and recipes in nested folders, with packs you can share. Stored on this machine only.</p>
 
+        <div class="qk-lib-preview" id="qk-lib-preview" data-state="empty">
+          <div class="qk-lib-preview__head">
+            <span class="qk-lib-preview__kicker" id="qk-lib-preview-kicker">Preview</span>
+            <span class="qk-lib-preview__mode" id="qk-lib-preview-mode">Click to preview</span>
+            <div class="qk-lib-preview__headbtns">
+              <button type="button" class="qk-iconbtn qk-lib-preview__headbtn" id="qk-lib-preview-settings" data-icon="wrench"
+                      aria-label="Preview settings" data-tip="Preview mode, generate missing previews, clear the preview cache"></button>
+              <button type="button" class="qk-iconbtn qk-lib-preview__headbtn" id="qk-lib-preview-collapse" data-icon="close"
+                      aria-label="Collapse the preview" aria-expanded="true" data-tip="Collapse or expand the preview"></button>
+            </div>
+          </div>
+
+          <div class="qk-lib-preview__body" id="qk-lib-preview-body">
+            <div class="qk-lib-preview__stage" id="qk-lib-preview-stage">
+              <video class="qk-lib-preview__video" id="qk-lib-preview-video" muted loop playsinline preload="metadata" hidden></video>
+              <canvas class="qk-lib-preview__canvas" id="qk-lib-preview-canvas" width="960" height="540" hidden></canvas>
+              <div class="qk-lib-preview__empty" id="qk-lib-preview-empty">
+                <span class="qk-lib-preview__empty-icon" id="qk-lib-preview-empty-icon" aria-hidden="true"></span>
+                <p class="qk-lib-preview__empty-text" id="qk-lib-preview-empty-text">Click an item to preview it here.</p>
+                <button type="button" class="qk-btn qk-btn--secondary qk-btn--xs" id="qk-lib-preview-generate" hidden>Generate preview</button>
+              </div>
+              <div class="qk-lib-preview__busy" id="qk-lib-preview-busy" hidden>
+                <span class="qk-lib-preview__busy-text" id="qk-lib-preview-busy-text">Working</span>
+                <button type="button" class="qk-btn qk-btn--ghost qk-btn--xs" id="qk-lib-preview-cancel">Cancel</button>
+              </div>
+            </div>
+
+            <div class="qk-lib-preview__controls">
+              <button type="button" class="qk-lib-preview__ctl" id="qk-lib-preview-play" aria-label="Play" data-icon="play"
+                      data-tip="Play or pause (Space)" disabled></button>
+              <button type="button" class="qk-lib-preview__ctl qk-lib-preview__ctl--text" id="qk-lib-preview-loop"
+                      aria-pressed="true" data-tip="Loop the preview">Loop</button>
+              <button type="button" class="qk-lib-preview__ctl qk-lib-preview__ctl--text" id="qk-lib-preview-speed"
+                      data-tip="Playback speed">1x</button>
+              <input class="qk-range qk-lib-preview__scrub" id="qk-lib-preview-scrub" type="range" min="0" max="1000"
+                     step="1" value="0" aria-label="Scrub the preview" disabled>
+              <span class="qk-lib-preview__clock" id="qk-lib-preview-clock">0:00</span>
+            </div>
+
+            <div class="qk-lib-preview__meta">
+              <div class="qk-lib-preview__titlerow">
+                <h2 class="qk-lib-preview__name" id="qk-lib-preview-name">Nothing selected</h2>
+                <span class="qk-lib-preview__badge" id="qk-lib-preview-badge" hidden></span>
+              </div>
+              <p class="qk-lib-preview__host" id="qk-lib-preview-host"></p>
+              <div class="qk-lib-preview__tags" id="qk-lib-preview-tags"></div>
+              <div class="qk-lib-preview__actions">
+                <button type="button" class="qk-btn qk-btn--primary qk-btn--sm" id="qk-lib-preview-apply"
+                        data-tip="Apply to the current selection (Enter or double-click)" disabled>Apply</button>
+                <button type="button" class="qk-btn qk-btn--secondary qk-btn--sm" id="qk-lib-preview-fav"
+                        data-tip="Add or remove this item from Favorites" disabled>Favorite</button>
+              </div>
+              <p class="qk-lib-preview__note" id="qk-lib-preview-note" hidden></p>
+            </div>
+
+            <div class="qk-lib-preview__params" id="qk-lib-preview-params" hidden></div>
+            <div class="qk-lib-preview__regen" id="qk-lib-preview-regen" hidden>
+              <span class="qk-lib-preview__regen-text">These settings no longer match the saved preview.</span>
+              <button type="button" class="qk-btn qk-btn--secondary qk-btn--xs" id="qk-lib-preview-regen-btn">Regenerate preview</button>
+            </div>
+          </div>
+
+          <div class="qk-lib-preview__resize" id="qk-lib-preview-resize" role="separator" aria-orientation="horizontal"
+               aria-label="Resize the preview" tabindex="0" data-tip="Drag to resize the preview"></div>
+        </div>
+
         <div class="qk-lib-searchrow">
           <label class="qk-lib-search">
             <span class="qk-lib-search__label">Search</span>
@@ -633,6 +699,7 @@
   <script src="design/icons/icons.js"></script>
   <script src="js/csinterface-lite.js"></script>
   <script src="js/library-core.js"></script>
+  <script src="js/preview-core.js"></script>
   <script src="js/panel.js"></script>
 </body>
 </html>

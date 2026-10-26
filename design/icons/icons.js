@@ -83,7 +83,12 @@
       '<path d="M10.3 2.9a3.1 3.1 0 0 0-3.6 4.4l-4 4a1.4 1.4 0 0 0 2 2l4-4a3.1 3.1 0 0 0 4.4-3.6l-1.9 1.9-1.7-.4-.4-1.7Z"/>',
     plus:
       '<path d="M8 3.4v9.2"/>' +
-      '<path d="M3.4 8h9.2"/>'
+      '<path d="M3.4 8h9.2"/>',
+    play:
+      '<path d="M5.6 3.4 12.2 8l-6.6 4.6Z"/>',
+    pause:
+      '<path d="M6.1 3.6v8.8"/>' +
+      '<path d="M9.9 3.6v8.8"/>'
   };
 
   function svg(name, size, extraClass) {

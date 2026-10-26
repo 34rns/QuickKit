@@ -4,7 +4,7 @@
 (function (window, document) {
   "use strict";
 
-  var VERSION = "0.7.0";
+  var VERSION = "0.8.0";
   var WELCOME_KEY = "qk.welcome.v1";
   var HOST_TEST_TIMEOUT = 8000;
   var ACTION_TIMEOUT = 15000;
@@ -294,6 +294,39 @@
     els.libDialogOk = document.getElementById("qk-lib-dialog-ok");
     els.libDialogCancel = document.getElementById("qk-lib-dialog-cancel");
     els.libDialogClose = document.getElementById("qk-lib-dialog-close");
+
+    els.libPreview = document.getElementById("qk-lib-preview");
+    els.libPreviewKicker = document.getElementById("qk-lib-preview-kicker");
+    els.libPreviewMode = document.getElementById("qk-lib-preview-mode");
+    els.libPreviewSettings = document.getElementById("qk-lib-preview-settings");
+    els.libPreviewCollapse = document.getElementById("qk-lib-preview-collapse");
+    els.libPreviewBody = document.getElementById("qk-lib-preview-body");
+    els.libPreviewStage = document.getElementById("qk-lib-preview-stage");
+    els.libPreviewVideo = document.getElementById("qk-lib-preview-video");
+    els.libPreviewCanvas = document.getElementById("qk-lib-preview-canvas");
+    els.libPreviewEmpty = document.getElementById("qk-lib-preview-empty");
+    els.libPreviewEmptyIcon = document.getElementById("qk-lib-preview-empty-icon");
+    els.libPreviewEmptyText = document.getElementById("qk-lib-preview-empty-text");
+    els.libPreviewGenerate = document.getElementById("qk-lib-preview-generate");
+    els.libPreviewBusy = document.getElementById("qk-lib-preview-busy");
+    els.libPreviewBusyText = document.getElementById("qk-lib-preview-busy-text");
+    els.libPreviewCancel = document.getElementById("qk-lib-preview-cancel");
+    els.libPreviewPlay = document.getElementById("qk-lib-preview-play");
+    els.libPreviewLoop = document.getElementById("qk-lib-preview-loop");
+    els.libPreviewSpeed = document.getElementById("qk-lib-preview-speed");
+    els.libPreviewScrub = document.getElementById("qk-lib-preview-scrub");
+    els.libPreviewClock = document.getElementById("qk-lib-preview-clock");
+    els.libPreviewName = document.getElementById("qk-lib-preview-name");
+    els.libPreviewBadge = document.getElementById("qk-lib-preview-badge");
+    els.libPreviewHost = document.getElementById("qk-lib-preview-host");
+    els.libPreviewTags = document.getElementById("qk-lib-preview-tags");
+    els.libPreviewApply = document.getElementById("qk-lib-preview-apply");
+    els.libPreviewFav = document.getElementById("qk-lib-preview-fav");
+    els.libPreviewNote = document.getElementById("qk-lib-preview-note");
+    els.libPreviewParams = document.getElementById("qk-lib-preview-params");
+    els.libPreviewRegen = document.getElementById("qk-lib-preview-regen");
+    els.libPreviewRegenBtn = document.getElementById("qk-lib-preview-regen-btn");
+    els.libPreviewResize = document.getElementById("qk-lib-preview-resize");
 
     els.panels = {
       anchor: document.getElementById("qk-panel-anchor"),
@@ -3681,6 +3714,7 @@
     index: null,
     root: "",
     missing: [],
+    previewsGone: [],
     status: null,
     search: "",
     collection: "all",
@@ -3794,6 +3828,7 @@
         lib.index = result.index;
         lib.root = result.root || lib.root;
         lib.missing = result.missing || [];
+        lib.previewsGone = result.previewsGone || [];
         lib.status = result.status || null;
         if (first && lib.status && lib.status.migrated && lib.status.migrated.count) {
           var migrated = lib.status.migrated;
@@ -3839,6 +3874,7 @@
     }
     if (result.index) lib.index = result.index;
     if (result.missing) lib.missing = result.missing;
+    if (result.previewsGone) lib.previewsGone = result.previewsGone;
     if (message) {
       showMessage("ok", message);
       setStatus(message);
@@ -3959,6 +3995,7 @@
       );
       els.libItems.innerHTML = "";
       els.libCount.textContent = "";
+      renderPreview();
       return;
     }
 
@@ -3974,6 +4011,7 @@
       }
       els.libItems.innerHTML = "";
       els.libCount.textContent = lib.loading ? "Loading" : "";
+      renderPreview();
       return;
     }
 
@@ -3985,6 +4023,9 @@
     var all = libVisibleItems();
     var total = lib.index.items.length;
     var shown = all.slice(0, LIB_RENDER_MAX);
+
+    /* The cap note describes this render only; the migration note lives on. */
+    if (lib.note && lib.note.indexOf("Showing the first ") === 0) lib.note = "";
 
     if (els.libCount) {
       var countText = all.length === total ? libPlural(total, "item", "items") : all.length + " of " + total + " items";
@@ -4032,6 +4073,7 @@
     }
 
     renderLibViewButtons();
+    renderPreview();
   }
 
   function renderLibViewButtons() {
@@ -4267,6 +4309,7 @@
       tip = "Only works in " + (item.hostSupport[0] === "PPRO" ? "Premiere Pro" : "After Effects") + ". It stays in the library for that app.";
     }
     card.setAttribute("data-tip", tip);
+    if (preview.id === item.id) card.className += " is-previewed";
 
     var thumb = libEl("span", "qk-lib-card__thumb");
     var thumbUrl = "";
@@ -4276,14 +4319,17 @@
     }
     if (thumbUrl) {
       var img = document.createElement("img");
-      img.src = thumbUrl;
       img.alt = "";
       img.draggable = false;
+      img.loading = "lazy";
+      img.decoding = "async";
+      img.setAttribute("data-src", thumbUrl);
       img.addEventListener("error", function () {
         libClear(thumb);
         thumb.appendChild(libIconEl(libTypeIcon(item.type), 20, "qk-lib-card__glyph"));
       });
       thumb.appendChild(img);
+      libThumbWatch(img);
     } else {
       thumb.appendChild(libIconEl(libTypeIcon(item.type), 20, "qk-lib-card__glyph"));
     }
@@ -4368,6 +4414,7 @@
         lib.selected = ids;
         lib.focusId = id;
         renderLibrary();
+        libPreviewShow(id);
         return;
       }
     }
@@ -4379,6 +4426,7 @@
       lib.anchor = id;
       lib.focusId = id;
       renderLibrary();
+      libPreviewShow(id);
       return;
     }
 
@@ -4386,6 +4434,7 @@
     lib.anchor = id;
     lib.focusId = id;
     renderLibrary();
+    libPreviewShow(id);
   }
 
   function libFocusStep(step) {
@@ -4415,6 +4464,7 @@
         } catch (eScroll) {}
       }
     }
+    libPreviewShow(target.id);
   }
 
   function libOpenItemMenu(id, x, y) {
@@ -5183,7 +5233,17 @@
     els.libItems.addEventListener("dblclick", function (event) {
       var card = event.target.closest(".qk-lib-card");
       if (!card) return;
-      libEditItem(card.getAttribute("data-id"));
+      var id = card.getAttribute("data-id");
+      if (lib.selected.indexOf(id) < 0) libSelectCard(id, null);
+      libPreviewShow(id);
+      libApplyPreviewItem();
+    });
+
+    els.libItems.addEventListener("mouseover", function (event) {
+      if (preview.mode !== "hover") return;
+      var card = event.target.closest(".qk-lib-card");
+      if (!card) return;
+      libPreviewShow(card.getAttribute("data-id"));
     });
 
     els.libItems.addEventListener("contextmenu", function (event) {
@@ -5231,7 +5291,7 @@
       if (event.key === "Enter") {
         if (!lib.selected.length) return;
         event.preventDefault();
-        libEditItem(lib.selected[0]);
+        libApplyPreviewItem();
         return;
       }
       if (event.key === "ArrowDown" || event.key === "ArrowRight") {
@@ -5247,10 +5307,7 @@
       if (event.key === " " || event.key === "Spacebar") {
         if (!lib.focusId) return;
         event.preventDefault();
-        var at = lib.selected.indexOf(lib.focusId);
-        if (at >= 0) lib.selected.splice(at, 1);
-        else lib.selected.push(lib.focusId);
-        renderLibrary();
+        previewTogglePlay();
       }
     });
 
@@ -5324,6 +5381,8 @@
     if (savedView === "list" || savedView === "grid") lib.view = savedView;
     var savedThumb = Number(libStore(LIB_THUMB_KEY));
     if (savedThumb >= 72 && savedThumb <= 176) lib.thumb = savedThumb;
+
+    previewBind();
   }
 
   function libDropIds(event) {
@@ -5341,6 +5400,1258 @@
       if (id) out.push(id);
     }
     return out;
+  }
+
+  /* ---------- library preview (Part 6B) ---------- */
+
+  var LIB_PREVIEW_MODE_KEY = "qk.library.preview.mode";
+  var LIB_PREVIEW_HEIGHT_KEY = "qk.library.preview.height";
+  var LIB_PREVIEW_COLLAPSED_KEY = "qk.library.preview.collapsed";
+  var LIB_PREVIEW_MIN_H = 96;
+  var LIB_PREVIEW_MAX_H = 420;
+
+  var preview = {
+    id: "",
+    params: {},
+    mode: "click",
+    stageH: 180,
+    collapsed: false,
+    playing: true,
+    loop: true,
+    speed: 1,
+    time: 0,
+    last: 0,
+    kind: "none",
+    raf: 0,
+    job: null,
+    thumbs: null,
+    ffmpegModule: null,
+    ffmpegModuleError: "",
+    nodeModule: null,
+    nodeModuleError: "",
+    ffmpeg: "",
+    ffmpegError: "",
+    gen: null
+  };
+
+  function previewCore() {
+    return window.QKPreviewCore || null;
+  }
+
+  function previewCopyParams(params) {
+    var out = {};
+    for (var key in params) {
+      if (Object.prototype.hasOwnProperty.call(params, key)) out[key] = params[key];
+    }
+    return out;
+  }
+
+  function previewClampHeight(value) {
+    var height = Number(value);
+    if (!isFinite(height)) height = 180;
+    if (height < LIB_PREVIEW_MIN_H) height = LIB_PREVIEW_MIN_H;
+    if (height > LIB_PREVIEW_MAX_H) height = LIB_PREVIEW_MAX_H;
+    return Math.round(height);
+  }
+
+  /* Canvas colours cannot read CSS variables, so the values are fetched once
+     per paint from the same token file the rest of the panel uses. */
+  function previewCss(name, fallback) {
+    try {
+      var value = window.getComputedStyle(document.documentElement).getPropertyValue(name);
+      value = String(value || "").replace(/^\s+|\s+$/g, "");
+      return value || fallback;
+    } catch (eVar) {
+      return fallback;
+    }
+  }
+
+  function previewItem() {
+    var core = libCore();
+    if (!core || !lib.index || !preview.id) return null;
+    return core.itemById(lib.index, preview.id);
+  }
+
+  function previewStateOf(item) {
+    var core = libCore();
+    if (!core || !item) return "none";
+    if (lib.previewsGone && lib.previewsGone.indexOf(item.id) >= 0) return "none";
+    return core.previewState(item);
+  }
+
+  function previewAssetKind(item) {
+    if (!item || item.type !== "ae-preset") return "";
+    var asset = String(item.asset || "").toLowerCase();
+    if (/\.qkpreset$/.test(asset)) return "qkpreset";
+    if (/\.ffx$/.test(asset)) return "ffx";
+    return "";
+  }
+
+  function previewCanGenerate(item) {
+    return !!item && libCurrentHost() === "AEFT" && previewAssetKind(item) !== "" && !libIsMissing(item.id);
+  }
+
+  function previewCanApply(item) {
+    if (!item || libIsMissing(item.id) || !libWorksHere(item)) return false;
+    return previewAssetKind(item) !== "";
+  }
+
+  function previewApprox(item) {
+    var core = previewCore();
+    if (!core || !item) return null;
+    return core.approxFor({
+      type: item.type,
+      name: item.name,
+      category: item.category,
+      tags: item.tags,
+      params: preview.params
+    });
+  }
+
+  /* ------------------------------------------------------------- player */
+
+  function previewSetIcon(button, name) {
+    if (!button) return;
+    button.setAttribute("data-icon", name);
+    if (window.QKIcons && window.QKIcons.has(name)) button.innerHTML = window.QKIcons.svg(name, 16);
+  }
+
+  function previewReleaseVideo() {
+    var video = els.libPreviewVideo;
+    if (!video) return;
+    try {
+      video.pause();
+    } catch (ePause) {}
+    video.removeAttribute("src");
+    try {
+      video.load();
+    } catch (eLoad) {}
+    video.hidden = true;
+  }
+
+  function previewStopLoop() {
+    if (preview.raf) {
+      try {
+        window.cancelAnimationFrame(preview.raf);
+      } catch (eCancel) {}
+      preview.raf = 0;
+    }
+    preview.last = 0;
+  }
+
+  function previewStartLoop() {
+    if (preview.raf) return;
+    preview.last = 0;
+    preview.raf = window.requestAnimationFrame(previewFrame);
+  }
+
+  function previewDuration() {
+    if (preview.kind === "video" && els.libPreviewVideo) {
+      var length = Number(els.libPreviewVideo.duration);
+      if (isFinite(length) && length > 0.05) return length;
+    }
+    var approx = previewApprox(previewItem());
+    if (approx && approx.duration) return approx.duration;
+    return 1.2;
+  }
+
+  function previewFrame(now) {
+    preview.raf = 0;
+    var item = previewItem();
+    if (!item || preview.kind === "none") return;
+
+    var duration = previewDuration();
+    if (preview.kind === "video") {
+      var video = els.libPreviewVideo;
+      preview.time = video.currentTime || 0;
+      preview.playing = !video.paused && !video.ended;
+      if (preview.time >= duration - 0.02 && !preview.loop) preview.playing = false;
+    } else if (preview.playing) {
+      var dt = preview.last ? (now - preview.last) / 1000 : 0;
+      preview.last = now;
+      preview.time += dt * preview.speed;
+      if (preview.time >= duration) {
+        if (preview.loop) preview.time = preview.time % Math.max(0.01, duration);
+        else {
+          preview.time = duration;
+          preview.playing = false;
+        }
+      }
+      previewPaint();
+    }
+
+    previewUpdateTransport();
+    if (preview.kind === "video" || preview.playing) preview.raf = window.requestAnimationFrame(previewFrame);
+  }
+
+  function previewPaint() {
+    var canvas = els.libPreviewCanvas;
+    if (!canvas || preview.kind !== "canvas") return;
+    var item = previewItem();
+    var approx = previewApprox(item);
+    if (!item || !approx) return;
+
+    var ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    var width = canvas.width;
+    var height = canvas.height;
+    var duration = previewDuration() || 1;
+    var raw = Math.max(0, Math.min(1, preview.time / duration));
+
+    var core = previewCore();
+    var kind = approx.kind;
+    var eased = raw;
+    if (kind !== "type" && kind !== "wipe") eased = core.easingFn(approx.easing)(raw);
+    var pose = core.sampleAt(kind, eased, {
+      direction: approx.direction,
+      distance: approx.distance * (height / 270)
+    });
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    var stageColor = previewCss("--qk-lib-preview-stage-bg");
+    if (stageColor) ctx.fillStyle = stageColor;
+    ctx.fillRect(0, 0, width, height);
+
+    var word = item.name.length > 34 ? item.name.slice(0, 33) + "\u2026" : item.name;
+    ctx.font = "600 " + Math.round(height * 0.11) + "px " + previewCss("--qk-font-ui", "Inter, sans-serif");
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    var textColor = previewCss("--qk-text");
+    if (textColor) ctx.fillStyle = textColor;
+
+    var textWidth = ctx.measureText(word).width;
+
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, pose.opacity));
+    if (pose.blur > 0.2) ctx.filter = "blur(" + pose.blur.toFixed(1) + "px)";
+    ctx.translate(width / 2 + pose.dx, height / 2 + pose.dy);
+    if (pose.rotate) ctx.rotate((pose.rotate * Math.PI) / 180);
+    if (pose.scale !== 1) ctx.scale(pose.scale, pose.scale);
+    if (pose.clip < 1) {
+      ctx.beginPath();
+      ctx.rect(-textWidth / 2, -height, Math.max(0.5, textWidth * pose.clip), height * 2);
+      ctx.clip();
+    }
+    ctx.fillText(word, 0, 0);
+    ctx.restore();
+  }
+
+  function previewDecideKind(item) {
+    var api = libApiGet();
+    preview.kind = "none";
+    if (!item) return;
+
+    var state = previewStateOf(item);
+    var approx = previewApprox(item);
+    var videoUrl = "";
+    if (api && item.previewVideo && typeof api.itemFileUrl === "function") {
+      videoUrl = api.itemFileUrl(item.id, item.previewVideo);
+    }
+
+    if (state === "ready" && videoUrl) {
+      var video = els.libPreviewVideo;
+      preview.kind = "video";
+      video.hidden = false;
+      if (video.getAttribute("src") !== videoUrl) video.setAttribute("src", videoUrl);
+      video.muted = true;
+      video.loop = preview.loop;
+      video.playbackRate = preview.speed;
+      try {
+        video.load();
+        var started = video.play();
+        if (started && started.catch) started.catch(function () {});
+      } catch (ePlay) {}
+      preview.playing = true;
+      previewStartLoop();
+      return;
+    }
+
+    if (approx) {
+      preview.kind = "canvas";
+      els.libPreviewCanvas.hidden = false;
+      preview.playing = true;
+      previewPaint();
+      previewStartLoop();
+      return;
+    }
+
+    if (videoUrl) {
+      preview.kind = "video";
+      els.libPreviewVideo.hidden = false;
+      els.libPreviewVideo.setAttribute("src", videoUrl);
+      try {
+        els.libPreviewVideo.load();
+      } catch (eLoad2) {}
+      previewStartLoop();
+    }
+  }
+
+  function previewReload() {
+    previewStopLoop();
+    previewReleaseVideo();
+    preview.kind = "none";
+    preview.time = 0;
+    preview.playing = true;
+    if (els.libPreviewCanvas) els.libPreviewCanvas.hidden = true;
+    var item = previewItem();
+    if (item) previewDecideKind(item);
+    renderPreview();
+  }
+
+  function previewMarkCard(id) {
+    if (!els.libItems) return;
+    var marked = els.libItems.querySelectorAll(".qk-lib-card.is-previewed");
+    for (var i = 0; i < marked.length; i++) marked[i].classList.remove("is-previewed");
+    if (!id) return;
+    var card = els.libItems.querySelector('[data-id="' + id + '"]');
+    if (card) card.classList.add("is-previewed");
+  }
+
+  function libPreviewShow(id) {
+    var core = libCore();
+    if (!core || !lib.index) return;
+    var item = id ? core.itemById(lib.index, id) : null;
+    var nextId = item ? item.id : "";
+    if (nextId === preview.id && preview.kind !== "none") {
+      renderPreview();
+      previewMarkCard(nextId);
+      return;
+    }
+    previewStopLoop();
+    previewReleaseVideo();
+    preview.id = nextId;
+    preview.params = item ? previewCopyParams(item.params) : {};
+    preview.time = 0;
+    preview.playing = true;
+    preview.kind = "none";
+    if (els.libPreviewCanvas) els.libPreviewCanvas.hidden = true;
+    if (item) previewDecideKind(item);
+    renderPreview();
+    previewMarkCard(nextId);
+  }
+
+  function previewTogglePlay() {
+    if (!previewItem() || preview.kind === "none") return;
+    if (preview.kind === "video") {
+      var video = els.libPreviewVideo;
+      if (video.paused) {
+        try {
+          var started = video.play();
+          if (started && started.catch) started.catch(function () {});
+        } catch (ePlay) {}
+        preview.playing = true;
+      } else {
+        video.pause();
+        preview.playing = false;
+      }
+    } else {
+      preview.playing = !preview.playing;
+      if (preview.playing && preview.time >= previewDuration() - 0.01) preview.time = 0;
+      preview.last = 0;
+      previewStartLoop();
+      previewPaint();
+    }
+    previewUpdateTransport();
+  }
+
+  function previewToggleLoop() {
+    preview.loop = !preview.loop;
+    if (els.libPreviewVideo) els.libPreviewVideo.loop = preview.loop;
+    previewUpdateTransport();
+  }
+
+  function previewCycleSpeed() {
+    var core = previewCore();
+    if (!core) return;
+    preview.speed = core.nextSpeed(preview.speed);
+    if (els.libPreviewVideo) {
+      try {
+        els.libPreviewVideo.playbackRate = preview.speed;
+      } catch (eRate) {}
+    }
+    previewUpdateTransport();
+  }
+
+  function previewScrubTo(ratio) {
+    var value = Math.max(0, Math.min(1, Number(ratio) || 0));
+    var duration = previewDuration();
+    preview.time = value * duration;
+    if (preview.kind === "video" && els.libPreviewVideo) {
+      try {
+        els.libPreviewVideo.currentTime = preview.time;
+      } catch (eSeek) {}
+    } else {
+      previewPaint();
+    }
+    previewUpdateTransport();
+  }
+
+  function previewUpdateTransport() {
+    if (!els.libPreviewClock) return;
+    var core = previewCore();
+    var item = previewItem();
+    var ready = !!item && preview.kind !== "none";
+    var duration = previewDuration();
+
+    if (els.libPreviewPlay) {
+      els.libPreviewPlay.disabled = !ready;
+      previewSetIcon(els.libPreviewPlay, preview.playing ? "pause" : "play");
+      els.libPreviewPlay.setAttribute("aria-label", preview.playing ? "Pause the preview" : "Play the preview");
+      els.libPreviewPlay.setAttribute("data-tip", preview.playing ? "Pause (Space)" : "Play (Space)");
+    }
+    if (els.libPreviewLoop) {
+      els.libPreviewLoop.setAttribute("aria-pressed", preview.loop ? "true" : "false");
+      els.libPreviewLoop.disabled = !ready;
+    }
+    if (els.libPreviewSpeed) {
+      els.libPreviewSpeed.textContent = preview.speed + "x";
+      els.libPreviewSpeed.disabled = !ready;
+    }
+    if (els.libPreviewScrub) {
+      els.libPreviewScrub.disabled = !ready;
+      var ratio = duration > 0 ? preview.time / duration : 0;
+      els.libPreviewScrub.value = String(Math.round(Math.max(0, Math.min(1, ratio)) * 1000));
+    }
+    if (core) {
+      els.libPreviewClock.textContent = core.formatClock(preview.time) + " / " + core.formatClock(duration);
+    }
+  }
+
+  /* --------------------------------------------------------------- pane */
+
+  function previewSetMode(mode) {
+    preview.mode = mode === "hover" ? "hover" : "click";
+    libStore(LIB_PREVIEW_MODE_KEY, preview.mode);
+    if (els.libPreviewMode) {
+      els.libPreviewMode.textContent = preview.mode === "hover" ? "Hover to preview" : "Click to preview";
+    }
+    setStatus(preview.mode === "hover" ? "Preview mode: Hover. Click still selects." : "Preview mode: Click.");
+  }
+
+  function previewGenerateCount() {
+    var core = previewCore();
+    if (!core || !lib.index) return 0;
+    if (libCurrentHost() !== "AEFT") return 0;
+    return core.planGeneration(lib.index.items, previewStateOf).length;
+  }
+
+  function renderPreview() {
+    if (!els.libPreview) return;
+    var core = libCore();
+    var item = previewItem();
+    var state = item ? previewStateOf(item) : "none";
+
+    els.libPreview.setAttribute("data-state", item ? "selected" : "empty");
+    els.libPreview.setAttribute("data-collapsed", preview.collapsed ? "true" : "false");
+    if (els.libPreviewBody) els.libPreviewBody.hidden = preview.collapsed;
+    els.libPreview.style.setProperty("--qk-lib-preview-stage-h", preview.stageH + "px");
+    if (els.libPreviewCollapse) {
+      els.libPreviewCollapse.setAttribute("aria-expanded", preview.collapsed ? "false" : "true");
+      els.libPreviewCollapse.setAttribute("data-tip", preview.collapsed ? "Expand the preview" : "Collapse the preview");
+    }
+    if (els.libPreviewMode) {
+      els.libPreviewMode.textContent = preview.mode === "hover" ? "Hover to preview" : "Click to preview";
+    }
+
+    if (els.libPreviewVideo) els.libPreviewVideo.hidden = preview.kind !== "video";
+    if (els.libPreviewCanvas) els.libPreviewCanvas.hidden = preview.kind !== "canvas";
+
+    var empty = !item || preview.kind === "none";
+    if (els.libPreviewEmpty) els.libPreviewEmpty.hidden = !empty;
+
+    if (!item) {
+      if (els.libPreviewEmptyText) {
+        els.libPreviewEmptyText.textContent = core
+          ? "Click an item to preview it here. Arrow keys move the selection."
+          : "The library engine did not load, so there is nothing to preview.";
+      }
+      if (els.libPreviewEmptyIcon) {
+        libClear(els.libPreviewEmptyIcon);
+        els.libPreviewEmptyIcon.appendChild(libIconEl("library", 28));
+      }
+    } else if (preview.kind === "none") {
+      if (els.libPreviewEmptyText) {
+        els.libPreviewEmptyText.textContent = previewCanGenerate(item)
+          ? "No rendered preview yet. Generate one from After Effects, or keep the approximation."
+          : "No rendered preview yet.";
+      }
+      if (els.libPreviewEmptyIcon) {
+        libClear(els.libPreviewEmptyIcon);
+        els.libPreviewEmptyIcon.appendChild(libIconEl(libTypeIcon(item.type), 28));
+      }
+    }
+
+    if (els.libPreviewGenerate) {
+      els.libPreviewGenerate.hidden = !previewCanGenerate(item);
+      els.libPreviewGenerate.disabled = !!(preview.gen && preview.gen.active);
+      els.libPreviewGenerate.textContent = state === "stale" ? "Regenerate preview" : "Generate preview";
+    }
+
+    if (els.libPreviewName) els.libPreviewName.textContent = item ? item.name : "Nothing selected";
+    if (els.libPreviewBadge) {
+      els.libPreviewBadge.hidden = !item;
+      els.libPreviewBadge.textContent = item ? libTypeLabel(item.type) : "";
+    }
+    if (els.libPreviewHost) {
+      if (!item) els.libPreviewHost.textContent = "";
+      else {
+        var hostText = libHostText(item);
+        if (libIsMissing(item.id)) hostText += " \u00b7 the file is missing on disk";
+        if (previewCanGenerate(item)) {
+          hostText += state === "ready" ? " \u00b7 preview ready" : state === "stale" ? " \u00b7 preview out of date" : " \u00b7 no preview yet";
+        }
+        els.libPreviewHost.textContent = hostText;
+      }
+    }
+
+    if (els.libPreviewTags) {
+      libClear(els.libPreviewTags);
+      var tags = item && item.tags ? item.tags : [];
+      for (var t = 0; t < tags.length; t++) {
+        els.libPreviewTags.appendChild(libEl("span", "qk-lib-preview__tag", tags[t]));
+      }
+    }
+
+    if (els.libPreviewApply) {
+      var host = libCurrentHost();
+      if (host === "PPRO") {
+        els.libPreviewApply.textContent = "Coming in 6D";
+        els.libPreviewApply.disabled = true;
+        els.libPreviewApply.setAttribute("data-tip", "Applying library items in Premiere Pro is part 6D. Previews still play here.");
+      } else {
+        els.libPreviewApply.textContent = "Apply";
+        els.libPreviewApply.disabled = !previewCanApply(item);
+        els.libPreviewApply.setAttribute(
+          "data-tip",
+          item && item.type === "pack"
+            ? "A pack is a bundle of items. Open its menu to unpack it."
+            : "Apply to the current selection (Enter or double-click)"
+        );
+      }
+    }
+
+    if (els.libPreviewFav) {
+      els.libPreviewFav.disabled = !item;
+      els.libPreviewFav.textContent = item && item.favorite ? "In Favorites" : "Favorite";
+      els.libPreviewFav.setAttribute("aria-pressed", item && item.favorite ? "true" : "false");
+    }
+
+    if (els.libPreviewNote) {
+      var note = "";
+      if (item && state === "stale") note = "The saved preview was made with different settings.";
+      if (item && preview.kind === "canvas") note = "Showing an approximation, not the rendered preset.";
+      els.libPreviewNote.textContent = note;
+      els.libPreviewNote.hidden = !note;
+    }
+
+    renderPreviewParams(item);
+    renderPreviewRegen(item, state);
+    previewUpdateTransport();
+  }
+
+  function renderPreviewRegen(item, state) {
+    if (!els.libPreviewRegen) return;
+    var show = !!item && state === "stale" && previewCanGenerate(item) && !(preview.gen && preview.gen.active);
+    els.libPreviewRegen.hidden = !show;
+    if (els.libPreviewRegenBtn) {
+      els.libPreviewRegenBtn.disabled = !previewCanGenerate(item);
+      els.libPreviewRegenBtn.textContent = "Regenerate preview";
+    }
+  }
+
+  function renderPreviewParams(item) {
+    if (!els.libPreviewParams) return;
+    libClear(els.libPreviewParams);
+    var core = libCore();
+    if (!core || !item) {
+      els.libPreviewParams.hidden = true;
+      return;
+    }
+    var defs = core.paramDefs(item.type);
+    els.libPreviewParams.hidden = defs.length === 0;
+    if (!defs.length) return;
+
+    for (var i = 0; i < defs.length; i++) {
+      (function (def) {
+        var row = libEl("div", "qk-lib-preview__param");
+        row.setAttribute("data-param", def.key);
+        row.appendChild(libEl("span", "qk-lib-preview__param-label", def.label));
+
+        var value = preview.params[def.key];
+        if (value === undefined) value = def.value;
+
+        if (def.kind === "number") {
+          var wrap = libEl("div", "qk-lib-preview__param-value");
+          var input = document.createElement("input");
+          input.type = "range";
+          input.className = "qk-range";
+          input.min = String(def.min);
+          input.max = String(def.max);
+          input.step = String(def.step);
+          input.value = String(value);
+          input.setAttribute("aria-label", def.label);
+          var clock = libEl("span", "", String(value) + (def.unit || ""));
+          wrap.appendChild(input);
+          wrap.appendChild(clock);
+          row.appendChild(wrap);
+
+          input.addEventListener("input", function () {
+            preview.params[def.key] = Number(input.value);
+            clock.textContent = input.value + (def.unit || "");
+            previewParamsChanged(item, false);
+          });
+          input.addEventListener("change", function () {
+            preview.params[def.key] = Number(input.value);
+            previewParamsChanged(item, true);
+          });
+        } else {
+          var select = document.createElement("select");
+          select.className = "qk-select";
+          select.setAttribute("aria-label", def.label);
+          for (var o = 0; o < def.options.length; o++) {
+            var option = libEl("option", "", def.options[o].label);
+            option.value = def.options[o].value;
+            if (def.options[o].value === value) option.selected = true;
+            select.appendChild(option);
+          }
+          row.appendChild(select);
+          select.addEventListener("change", function () {
+            preview.params[def.key] = select.value;
+            previewParamsChanged(item, true);
+          });
+        }
+
+        els.libPreviewParams.appendChild(row);
+      })(defs[i]);
+    }
+  }
+
+  function previewParamsChanged(item, persist) {
+    var core = libCore();
+    if (!core) return;
+
+    var probe = {
+      type: item.type,
+      asset: item.asset,
+      bytes: item.bytes,
+      params: preview.params,
+      previewVideo: item.previewVideo,
+      previewKey: item.previewKey
+    };
+    var state = core.previewState(probe);
+
+    if (state !== "ready") {
+      previewStopLoop();
+      previewReleaseVideo();
+      preview.kind = "none";
+      var approx = previewApprox(item);
+      if (approx) {
+        preview.kind = "canvas";
+        if (els.libPreviewCanvas) els.libPreviewCanvas.hidden = false;
+        preview.playing = true;
+        preview.time = 0;
+        previewPaint();
+        previewStartLoop();
+      }
+    }
+    renderPreview();
+
+    if (persist) {
+      var api = libApiGet();
+      if (!api) return;
+      var result = api.itemUpdate({ id: item.id, params: preview.params });
+      if (result && result.ok) {
+        if (result.index) lib.index = result.index;
+        var live = core.itemById(lib.index, item.id);
+        if (live) preview.params = previewCopyParams(live.params);
+      } else {
+        showMessage("error", (result && result.error) || "The new settings could not be saved.");
+      }
+      renderPreview();
+    }
+  }
+
+  /* ---------------------------------------------------------- generation */
+
+  function previewNodeModule() {
+    if (preview.nodeModule) return preview.nodeModule;
+    if (preview.nodeModuleError) return null;
+    if (!libNode()) {
+      preview.nodeModuleError = "Node is not available in this panel, so ffmpeg cannot start.";
+      return null;
+    }
+    var bridge = window.CSInterfaceLite;
+    var root = bridge && bridge.getSystemPath ? String(bridge.getSystemPath("extension") || "") : "";
+    var path = null;
+    try {
+      path = require("path");
+    } catch (ePath) {
+      path = null;
+    }
+    try {
+      root = root.replace(/^file:\/\/\//i, "").replace(/^file:\/\//i, "");
+      try {
+        root = decodeURIComponent(root);
+      } catch (eDecode) {}
+      var file = root && path ? path.join(root, "js", "preview-node.js") : "./js/preview-node.js";
+      preview.nodeModule = require(file);
+      return preview.nodeModule;
+    } catch (eLoad) {
+      preview.nodeModuleError = "Could not load the preview encoder: " + (eLoad && eLoad.message ? eLoad.message : eLoad);
+      return null;
+    }
+  }
+
+  function previewFfmpegModule() {
+    if (preview.ffmpegModule) return preview.ffmpegModule;
+    if (preview.ffmpegModuleError) return null;
+    if (!libNode()) {
+      preview.ffmpegModuleError = "Node is not available in this panel, so ffmpeg cannot start.";
+      return null;
+    }
+    var bridge = window.CSInterfaceLite;
+    var root = bridge && bridge.getSystemPath ? String(bridge.getSystemPath("extension") || "") : "";
+    var path = null;
+    try {
+      path = require("path");
+    } catch (ePath) {
+      path = null;
+    }
+    try {
+      root = root.replace(/^file:\/\/\//i, "").replace(/^file:\/\//i, "");
+      try {
+        root = decodeURIComponent(root);
+      } catch (eDecode) {}
+      var file = root && path ? path.join(root, "js", "ffmpeg-node.js") : "./js/ffmpeg-node.js";
+      preview.ffmpegModule = require(file);
+      return preview.ffmpegModule;
+    } catch (eLoad2) {
+      preview.ffmpegModuleError = "Could not load the FFmpeg helper: " + (eLoad2 && eLoad2.message ? eLoad2.message : eLoad2);
+      return null;
+    }
+  }
+
+  function previewFindFfmpeg(then) {
+    if (preview.ffmpeg) {
+      then(preview.ffmpeg);
+      return;
+    }
+    var mod = previewFfmpegModule();
+    if (!mod) {
+      then(null);
+      return;
+    }
+    var bridge = window.CSInterfaceLite;
+    var extensionDir = bridge && bridge.getSystemPath ? String(bridge.getSystemPath("extension") || "") : "";
+    var saved = "";
+    try {
+      var settings = silenceSettingsFile();
+      var stored = settings ? mod.loadSetting(settings) : null;
+      saved = stored && stored.ffmpegPath ? String(stored.ffmpegPath) : "";
+    } catch (eSettings) {
+      saved = "";
+    }
+    mod.locate({ extensionDir: extensionDir, savedPath: saved }, function (error, found) {
+      if (error || !found || !found.ok) {
+        preview.ffmpegError = (error && error.message) || "ffmpeg was not found. Run scripts\\fetch-ffmpeg.ps1.";
+        then(null);
+        return;
+      }
+      preview.ffmpeg = found.path;
+      preview.ffmpegError = "";
+      then(preview.ffmpeg);
+    });
+  }
+
+  function previewBusy(text) {
+    if (els.libPreviewBusy) {
+      els.libPreviewBusy.hidden = false;
+      if (els.libPreviewBusyText) els.libPreviewBusyText.textContent = text;
+    }
+    if (els.libPreviewCancel) els.libPreviewCancel.hidden = false;
+    if (text) setStatus(text);
+  }
+
+  function previewBusyDone() {
+    if (els.libPreviewBusy) els.libPreviewBusy.hidden = true;
+    if (els.libPreviewCancel) els.libPreviewCancel.hidden = true;
+  }
+
+  function previewGenerateOne(item, done) {
+    var api = libApiGet();
+    if (!api) {
+      done({ ok: false, error: preview.ffmpegError || lib.apiError || "The library is not available." });
+      return;
+    }
+    if (!previewCanGenerate(item)) {
+      done({ ok: false, error: "This item cannot be rendered into a preview here." });
+      return;
+    }
+    var dir = "";
+    try {
+      dir = api.previewTempDir(item.id);
+    } catch (eTemp) {
+      dir = "";
+    }
+    if (!dir) {
+      done({ ok: false, error: "QuickKit could not create a temp folder for the preview." });
+      return;
+    }
+
+    var payload = {
+      name: item.name,
+      kind: previewAssetKind(item),
+      path: api.itemAssetPath(item.id),
+      dir: dir
+    };
+
+    previewBusy("Rendering frames in After Effects\u2026");
+    bridgeCall("qkPreviewGenerate(" + qkQuote(JSON.stringify(payload)) + ")", function (data) {
+      if (!data || !data.ok) {
+        api.previewCleanup(dir);
+        done({ ok: false, error: (data && data.error) || "After Effects did not render the preview." });
+        return;
+      }
+
+      var frames = data.frames || [];
+      var paths = [];
+      for (var i = 0; i < frames.length; i++) paths.push(dir + "/" + frames[i]);
+
+      previewFindFfmpeg(function (ffmpegPath) {
+        if (!ffmpegPath) {
+          api.previewCleanup(dir);
+          done({ ok: false, error: preview.ffmpegError || preview.ffmpegModuleError || "ffmpeg was not found." });
+          return;
+        }
+        var mod = previewNodeModule();
+        if (!mod) {
+          api.previewCleanup(dir);
+          done({ ok: false, error: preview.nodeModuleError || "The preview encoder did not load." });
+          return;
+        }
+
+        previewBusy("Encoding the preview\u2026");
+        preview.job = mod.encode(
+          {
+            ffmpeg: ffmpegPath,
+            frames: paths,
+            fps: data.fps || 24,
+            width: 480,
+            seconds: data.seconds || 2.5,
+            outVideo: dir + "/preview.mp4",
+            outThumb: dir + "/thumb.webp",
+            listPath: dir + "/frames.txt"
+          },
+          {
+            onDone: function (error, result) {
+              preview.job = null;
+              if (error) {
+                api.previewCleanup(dir);
+                done({ ok: false, error: error.message || "ffmpeg could not encode the preview." });
+                return;
+              }
+              var saved = api.previewsSave({ id: item.id, videoPath: result.video, thumbPath: result.thumb });
+              api.previewCleanup(dir);
+              if (!saved || !saved.ok) {
+                done({ ok: false, error: (saved && saved.error) || "QuickKit could not save the preview files." });
+                return;
+              }
+              done({ ok: true, message: "Preview ready for \"" + item.name + "\"." });
+            }
+          }
+        );
+      });
+    });
+  }
+
+  function libGeneratePreview() {
+    var item = previewItem();
+    if (!item) {
+      showMessage("error", "Select an item first.");
+      return;
+    }
+    if (preview.gen && preview.gen.active) return;
+    if (libCurrentHost() !== "AEFT") {
+      showMessage("error", "Previews are generated in After Effects. In Premiere Pro they are read-only.");
+      return;
+    }
+    if (!previewCanGenerate(item)) {
+      showMessage("error", "This item has nothing QuickKit can render in After Effects.");
+      return;
+    }
+
+    preview.gen = { active: true, cancel: false, queue: [], done: 0, total: 1, failed: 0 };
+    renderPreview();
+    previewGenerateOne(item, function (result) {
+      preview.gen.active = false;
+      previewBusyDone();
+      if (!result.ok) {
+        showMessage("error", result.error || "The preview could not be generated.");
+        setStatus("Preview not generated");
+        renderPreview();
+        return;
+      }
+      showMessage("ok", result.message || "Preview generated.");
+      setStatus("Preview generated");
+      libRefresh();
+      previewReload();
+    });
+  }
+
+  function libGenerateMissing() {
+    if (preview.gen && preview.gen.active) return;
+    var core = libCore();
+    var pc = previewCore();
+    if (!core || !pc || !lib.index) return;
+    if (libCurrentHost() !== "AEFT") {
+      showMessage("error", "Previews are generated in After Effects. In Premiere Pro they are read-only.");
+      return;
+    }
+
+    var queue = pc.planGeneration(lib.index.items, previewStateOf);
+    if (!queue.length) {
+      showMessage("ok", "Every After Effects preset already has a fresh preview.");
+      setStatus("Nothing to generate");
+      return;
+    }
+
+    preview.gen = { active: true, cancel: false, queue: queue.slice(0), done: 0, total: queue.length, failed: 0 };
+    renderPreview();
+    previewRunQueue();
+  }
+
+  function previewRunQueue() {
+    if (!preview.gen || !preview.gen.active) return;
+
+    if (preview.gen.cancel) {
+      previewEndQueue("Stopped after " + preview.gen.done + " of " + preview.gen.total + ".");
+      return;
+    }
+    if (!preview.gen.queue.length) {
+      previewEndQueue(
+        "Generated " +
+          (preview.gen.total - preview.gen.failed) +
+          " of " +
+          preview.gen.total +
+          " previews" +
+          (preview.gen.failed ? ", " + preview.gen.failed + " failed" : "") +
+          "."
+      );
+      return;
+    }
+
+    var item = preview.gen.queue.shift();
+    previewBusy("Preview " + (preview.gen.done + 1) + " of " + preview.gen.total + " \u2014 " + item.name);
+    previewGenerateOne(item, function (result) {
+      if (!preview.gen || !preview.gen.active) return;
+      preview.gen.done++;
+      if (!result.ok) preview.gen.failed++;
+      previewRunQueue();
+    });
+  }
+
+  function previewEndQueue(message) {
+    var failed = preview.gen ? preview.gen.failed : 0;
+    preview.gen = null;
+    previewBusyDone();
+    renderPreview();
+    if (message) showMessage(failed ? "error" : "ok", message);
+    setStatus(message || "Preview generation finished");
+    libRefresh();
+    previewReload();
+  }
+
+  function libCancelGeneration() {
+    if (!preview.gen || !preview.gen.active) {
+      previewBusyDone();
+      return;
+    }
+    preview.gen.cancel = true;
+    if (preview.job && preview.job.cancel) {
+      try {
+        preview.job.cancel();
+      } catch (eCancel) {}
+    }
+    previewBusy("Stopping after this item\u2026");
+    setStatus("Stopping preview generation");
+  }
+
+  function libClearPreviewCache() {
+    var api = libApiGet();
+    if (!api) return;
+    var info = null;
+    try {
+      info = api.previewsInfo ? api.previewsInfo() : null;
+    } catch (eInfo) {
+      info = null;
+    }
+    var count = info && info.clearable ? info.clearable : 0;
+    var megabytes = info && info.bytes ? Math.round((info.bytes / (1024 * 1024)) * 10) / 10 : 0;
+
+    libOpenDialog({
+      title: "Clear the preview cache?",
+      lead: count
+        ? count + " preview file(s), about " + megabytes + " MB. The items and their presets are not touched."
+        : "There are no preview files to remove yet.",
+      body: [
+        libEl(
+          "p",
+          "qk-lib-dialog__message",
+          "Thumbnails and preview videos are deleted from the library folder. QuickKit falls back to the built-in approximation until you generate previews again."
+        )
+      ],
+      okLabel: "Clear previews",
+      onOk: function () {
+        var result = api.previewsClear({});
+        if (!result || !result.ok) return (result && result.error) || "The preview cache could not be cleared.";
+        libCloseDialog();
+        showMessage("ok", "Removed " + (result.cleared || 0) + " preview file(s).");
+        setStatus("Preview cache cleared");
+        libRefresh();
+        previewReload();
+        return "";
+      }
+    });
+  }
+
+  function libPreviewSettings(x, y) {
+    var missing = previewGenerateCount();
+    var rows = [];
+    rows.push({ heading: "Preview mode" });
+    rows.push({
+      label: (preview.mode === "click" ? "\u2713 " : "") + "Click (default)",
+      onClick: function () {
+        previewSetMode("click");
+      }
+    });
+    rows.push({
+      label: (preview.mode === "hover" ? "\u2713 " : "") + "Hover",
+      onClick: function () {
+        previewSetMode("hover");
+      }
+    });
+    rows.push({ sep: true });
+    rows.push({
+      label: missing ? "Generate missing previews (" + missing + ")" : "Generate missing previews",
+      disabled: libCurrentHost() !== "AEFT" || !missing,
+      onClick: libGenerateMissing
+    });
+    rows.push({
+      label: "Generate this preview",
+      disabled: !previewCanGenerate(previewItem()),
+      onClick: libGeneratePreview
+    });
+    rows.push({ sep: true });
+    /* Same library on both hosts: deleting previews from Premiere would throw
+       away files it cannot regenerate, so the row is read-only there. */
+    rows.push({
+      label: libCurrentHost() === "AEFT" ? "Clear preview cache\u2026" : "Clear preview cache (After Effects only)",
+      disabled: libCurrentHost() !== "AEFT",
+      onClick: libClearPreviewCache
+    });
+    libShowMenu(rows, x, y);
+  }
+
+  /* --------------------------------------------------------------- apply */
+
+  function libApplyPreviewItem() {
+    var item = previewItem();
+    if (!item) {
+      showMessage("error", "Select an item first.");
+      return;
+    }
+    if (libCurrentHost() === "PPRO") {
+      showMessage("error", "Applying library items in Premiere Pro arrives in part 6D. The previews work already.");
+      return;
+    }
+    if (libIsMissing(item.id)) {
+      showMessage("error", "\"" + item.name + "\" is missing its file on disk. Repair the library or import the pack again.");
+      return;
+    }
+    if (!previewCanApply(item)) {
+      showMessage(
+        "error",
+        item.type === "pack"
+          ? "A pack is a bundle of items, not something to apply. Unpack it from the item menu."
+          : "\"" + item.name + "\" cannot be applied in this app."
+      );
+      return;
+    }
+
+    var api = libApiGet();
+    if (!api) return;
+    var payload = {
+      kind: previewAssetKind(item),
+      path: api.itemAssetPath(item.id),
+      name: item.name
+    };
+
+    setStatus("Applying \"" + item.name + "\u2026");
+    bridgeCall("qkLibraryApply(" + qkQuote(JSON.stringify(payload)) + ")", function (data) {
+      if (!data || !data.ok) {
+        showMessage("error", (data && data.error) || "Nothing was applied.");
+        setStatus("Nothing applied");
+        return;
+      }
+      showMessage("ok", data.message || "Applied.");
+      setStatus(data.message || "Applied");
+      try {
+        api.touch(item.id);
+      } catch (eTouch) {}
+      libRefresh();
+      renderPreview();
+    });
+  }
+
+  function libPreviewFavorite() {
+    var item = previewItem();
+    if (!item) return;
+    libToggleFavorite(item.id);
+  }
+
+  /* ---------------------------------------------------------- bindings */
+
+  function previewBindDrag() {
+    var handle = els.libPreviewResize;
+    if (!handle) return;
+
+    function start(event) {
+      event.preventDefault();
+      var startY = event.clientY;
+      var startHeight = preview.stageH;
+      handle.setPointerCapture && handle.setPointerCapture(event.pointerId);
+      function move(moveEvent) {
+        preview.stageH = previewClampHeight(startHeight + (moveEvent.clientY - startY));
+        if (els.libPreviewStage) els.libPreviewStage.style.height = preview.stageH + "px";
+        els.libPreview.style.setProperty("--qk-lib-preview-stage-h", preview.stageH + "px");
+      }
+      function stop() {
+        document.removeEventListener("pointermove", move);
+        document.removeEventListener("pointerup", stop);
+        libStore(LIB_PREVIEW_HEIGHT_KEY, preview.stageH);
+      }
+      document.addEventListener("pointermove", move);
+      document.addEventListener("pointerup", stop);
+    }
+
+    handle.addEventListener("pointerdown", start);
+    handle.addEventListener("keydown", function (event) {
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+      event.preventDefault();
+      preview.stageH = previewClampHeight(preview.stageH + (event.key === "ArrowDown" ? 16 : -16));
+      els.libPreview.style.setProperty("--qk-lib-preview-stage-h", preview.stageH + "px");
+      libStore(LIB_PREVIEW_HEIGHT_KEY, preview.stageH);
+    });
+  }
+
+  function previewBind() {
+    previewBindDrag();
+
+    if (els.libPreviewCollapse) {
+      els.libPreviewCollapse.addEventListener("click", function () {
+        preview.collapsed = !preview.collapsed;
+        libStore(LIB_PREVIEW_COLLAPSED_KEY, preview.collapsed ? "1" : "0");
+        renderPreview();
+      });
+    }
+
+    if (els.libPreviewSettings) {
+      els.libPreviewSettings.addEventListener("click", function (event) {
+        var box = els.libPreviewSettings.getBoundingClientRect();
+        libPreviewSettings(box.left, box.bottom + 4);
+      });
+    }
+
+    if (els.libPreviewPlay) els.libPreviewPlay.addEventListener("click", previewTogglePlay);
+    if (els.libPreviewLoop) els.libPreviewLoop.addEventListener("click", previewToggleLoop);
+    if (els.libPreviewSpeed) els.libPreviewSpeed.addEventListener("click", previewCycleSpeed);
+
+    if (els.libPreviewScrub) {
+      els.libPreviewScrub.addEventListener("input", function () {
+        previewScrubTo(Number(els.libPreviewScrub.value) / 1000);
+      });
+    }
+
+    if (els.libPreviewApply) els.libPreviewApply.addEventListener("click", libApplyPreviewItem);
+    if (els.libPreviewFav) els.libPreviewFav.addEventListener("click", libPreviewFavorite);
+    if (els.libPreviewGenerate) els.libPreviewGenerate.addEventListener("click", libGeneratePreview);
+    if (els.libPreviewRegenBtn) els.libPreviewRegenBtn.addEventListener("click", libGeneratePreview);
+    if (els.libPreviewCancel) els.libPreviewCancel.addEventListener("click", libCancelGeneration);
+
+    if (els.libPreviewVideo) {
+      els.libPreviewVideo.addEventListener("play", function () {
+        preview.playing = true;
+        previewUpdateTransport();
+        previewStartLoop();
+      });
+      els.libPreviewVideo.addEventListener("pause", function () {
+        preview.playing = false;
+        previewUpdateTransport();
+      });
+      els.libPreviewVideo.addEventListener("loadedmetadata", previewUpdateTransport);
+      /* rAF is throttled when the panel is hidden; media events still fire, so
+         the clock and the scrub bar stay honest even then. */
+      els.libPreviewVideo.addEventListener("timeupdate", function () {
+        if (preview.kind !== "video") return;
+        preview.time = els.libPreviewVideo.currentTime || 0;
+        previewUpdateTransport();
+      });
+      els.libPreviewVideo.addEventListener("error", function () {
+        if (preview.kind !== "video") return;
+        previewReleaseVideo();
+        var item = previewItem();
+        preview.kind = "none";
+        if (item) {
+          if (previewApprox(item)) {
+            preview.kind = "canvas";
+            if (els.libPreviewCanvas) els.libPreviewCanvas.hidden = false;
+            previewPaint();
+            previewStartLoop();
+          }
+        }
+        renderPreview();
+      });
+    }
+
+    var savedMode = libStore(LIB_PREVIEW_MODE_KEY);
+    preview.mode = savedMode === "hover" ? "hover" : "click";
+    var savedHeight = Number(libStore(LIB_PREVIEW_HEIGHT_KEY));
+    if (isFinite(savedHeight) && savedHeight > 0) preview.stageH = previewClampHeight(savedHeight);
+    preview.collapsed = libStore(LIB_PREVIEW_COLLAPSED_KEY) === "1";
+
+    if (els.libPreviewStage) {
+      els.libPreviewStage.style.setProperty("--qk-lib-preview-stage-h", preview.stageH + "px");
+    }
+    renderPreview();
+  }
+
+  function libThumbLoad(img) {
+    var src = img.getAttribute("data-src");
+    if (!src) return;
+    img.removeAttribute("data-src");
+    img.src = src;
+  }
+
+  function libThumbWatch(img) {
+    if (!window.IntersectionObserver) {
+      libThumbLoad(img);
+      return;
+    }
+    if (!preview.thumbs) {
+      preview.thumbs = new window.IntersectionObserver(
+        function (entries) {
+          for (var i = 0; i < entries.length; i++) {
+            if (!entries[i].isIntersecting) continue;
+            libThumbLoad(entries[i].target);
+            preview.thumbs.unobserve(entries[i].target);
+          }
+        },
+        { rootMargin: "240px 0px" }
+      );
+    }
+    preview.thumbs.observe(img);
   }
 
   if (document.readyState === "loading") {

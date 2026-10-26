@@ -571,6 +571,26 @@ function create(options) {
     return out;
   }
 
+  /* A preview can be recorded and still be gone (cleared folder, antivirus,
+     a crash mid-generate). Reported separately from a missing asset so the
+     panel can say "generate it again" instead of "the item is broken". */
+  function previewGoneIds(index) {
+    var out = [];
+    for (var i = 0; i < index.items.length; i++) {
+      var item = index.items[i];
+      if (!item.previewVideo && !item.previewThumb) continue;
+      var dir = itemDirectory(item.id);
+      if (!dir) {
+        out.push(item.id);
+        continue;
+      }
+      var video = item.previewVideo ? insideRoot(dir, [item.previewVideo]) : "";
+      var thumb = item.previewThumb ? insideRoot(dir, [item.previewThumb]) : "";
+      if ((video && !exists(video)) || (thumb && !exists(thumb))) out.push(item.id);
+    }
+    return out;
+  }
+
   function load() {
     var guard = ready();
     if (guard) return { ok: false, error: guard.error };
@@ -582,6 +602,7 @@ function create(options) {
       root: root,
       index: state.index,
       missing: missingIds(state.index),
+      previewsGone: previewGoneIds(state.index),
       status: {
         created: state.created,
         repaired: state.repaired,
@@ -602,6 +623,7 @@ function create(options) {
       root: root,
       index: fixed.index,
       missing: missingIds(fixed.index),
+      previewsGone: previewGoneIds(fixed.index),
       skipped: fixed.skipped,
       missingAssets: fixed.missingAssets
     };
@@ -746,6 +768,133 @@ function create(options) {
     });
     if (!result.ok && !result.item && made) removeTree(itemDirectory(made.id));
     return result;
+  }
+
+  /* ----------------------------------------------------------- previews */
+
+  function previewPaths(id) {
+    var dir = itemDirectory(id);
+    if (!dir) return null;
+    return {
+      dir: dir,
+      video: insideRoot(dir, [core.PREVIEW_VIDEO]),
+      thumb: insideRoot(dir, [core.PREVIEW_THUMB])
+    };
+  }
+
+  /* Copies the encoded files into the item folder, then records them with the
+     signature of the params they were made for. Files first, index second: a
+     crash in between leaves the old preview in place rather than a record
+     pointing at nothing. */
+  function previewsSave(payload) {
+    var data = payload || {};
+    var id = core.safeId(data.id);
+    if (!id) return { ok: false, error: "That item is no longer in the library." };
+    var paths = previewPaths(id);
+    if (!paths) return { ok: false, error: "That item id is not safe to store." };
+
+    var videoFrom = String(data.videoPath || "");
+    var thumbFrom = String(data.thumbPath || "");
+    if (!videoFrom && !thumbFrom) return { ok: false, error: "There is no preview file to save." };
+
+    if (videoFrom && !exists(videoFrom)) return { ok: false, error: "The encoded video is missing." };
+    if (thumbFrom && !exists(thumbFrom)) return { ok: false, error: "The encoded thumbnail is missing." };
+
+    if (!mkdirp(paths.dir)) return { ok: false, error: "QuickKit could not create the item folder." };
+    if (videoFrom && !copyFile(videoFrom, paths.video)) {
+      return { ok: false, error: "QuickKit could not copy the preview video into the library." };
+    }
+    if (thumbFrom && !copyFile(thumbFrom, paths.thumb)) {
+      return { ok: false, error: "QuickKit could not copy the preview thumbnail into the library." };
+    }
+
+    var saved = null;
+    var result = withIndex(function (index) {
+      var item = core.itemById(index, id);
+      if (!item) return { error: "That item is no longer in the library." };
+      var set = core.itemPreviewSet(index, id, {
+        video: videoFrom ? core.PREVIEW_VIDEO : item.previewVideo,
+        thumb: thumbFrom ? core.PREVIEW_THUMB : item.previewThumb,
+        key: core.previewSignature(item)
+      });
+      if (set.error) return set;
+      if (!core.writeItem(disk, root, set.item)) {
+        return { error: "QuickKit could not write the item file. Check that the folder is not read-only." };
+      }
+      saved = set.item;
+      return set;
+    });
+    if (result.ok) {
+      result.item = saved;
+      result.videoUrl = fileUrl(paths.video);
+      result.thumbUrl = fileUrl(paths.thumb);
+      result.key = saved ? saved.previewKey : "";
+    }
+    return result;
+  }
+
+  /* ids omitted -> every item. Files go first so a locked video cannot leave
+     the index claiming a preview that is already deleted. */
+  function previewsClear(payload) {
+    var wanted = payload && payload.ids;
+    var targets = [];
+    var guard = ready();
+    if (guard) return { ok: false, error: guard.error };
+
+    if (wanted && wanted.length) {
+      for (var i = 0; i < wanted.length; i++) {
+        var safe = core.safeId(wanted[i]);
+        if (safe) targets.push(safe);
+      }
+    } else {
+      var current = lastLoad || core.readIndex(disk, root).index || core.createIndex();
+      for (var j = 0; j < current.items.length; j++) {
+        if (current.items[j].previewVideo || current.items[j].previewThumb) targets.push(current.items[j].id);
+      }
+    }
+    if (!targets.length) return { ok: true, cleared: 0, index: lastLoad };
+
+    var cleared = 0;
+    var result = withIndex(function (index) {
+      for (var k = 0; k < targets.length; k++) {
+        var paths = previewPaths(targets[k]);
+        if (paths) {
+          if (exists(paths.video)) removeTree(paths.video);
+          if (exists(paths.thumb)) removeTree(paths.thumb);
+        }
+        var item = core.itemById(index, targets[k]);
+        if (!item) continue;
+        if (!item.previewVideo && !item.previewThumb) continue;
+        core.itemPreviewClear(index, targets[k]);
+        core.writeItem(disk, root, item);
+        cleared++;
+      }
+      return {};
+    });
+    result.cleared = cleared;
+    return result;
+  }
+
+  /* What the settings row shows: how many previews exist, how many are stale,
+     and how much disk they take. Cheap enough to call on every load. */
+  function previewsInfo() {
+    var guard = ready();
+    if (guard) return { ok: false, error: guard.error };
+    var index = lastLoad || core.readIndex(disk, root).index || core.createIndex();
+    var info = { ok: true, total: index.items.length, ready: 0, stale: 0, none: 0, bytes: 0, clearable: 0 };
+    for (var i = 0; i < index.items.length; i++) {
+      var item = index.items[i];
+      var state = core.previewState(item);
+      if (state === "ready") info.ready++;
+      else if (state === "stale") info.stale++;
+      else info.none++;
+      if (!item.previewVideo && !item.previewThumb) continue;
+      info.clearable++;
+      var paths = previewPaths(item.id);
+      if (!paths) continue;
+      info.bytes += sizeOf(paths.video) + sizeOf(paths.thumb);
+    }
+    return info;
   }
 
   /* ---------------------------------------------------------------- packs */
@@ -1091,6 +1240,15 @@ function create(options) {
       if (!item) return "";
       return fileUrl(insideRoot(itemDirectory(id), [item.asset]));
     },
+    /* Native path, for the host app (ExtendScript File takes "/" on Windows). */
+    itemAssetPath: function (id) {
+      var item = lastLoad ? core.itemById(lastLoad, core.safeId(id)) : null;
+      if (!item) return "";
+      return insideRoot(itemDirectory(id), [item.asset]);
+    },
+    previewsSave: previewsSave,
+    previewsClear: previewsClear,
+    previewsInfo: previewsInfo,
     rootUrl: function () {
       return fileUrl(root);
     },
