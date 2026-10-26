@@ -151,6 +151,50 @@
         </details>
       </section>
 
+      <section class="qk-panel qk-panel--presets" id="qk-panel-presets" data-panel="presets" aria-label="Presets" hidden>
+        <p class="qk-panel__lead">Save the selected layers as a reusable look, then click a preset to apply it to the selection.</p>
+
+        <div class="qk-preset-toolbar">
+          <label class="qk-preset-search">
+            <span class="qk-preset-search__label">Search</span>
+            <input class="qk-input" id="qk-preset-search" type="search" placeholder="Name or folder" autocomplete="off"
+                   data-tip="Filter presets by name or folder">
+          </label>
+          <button type="button" class="qk-btn qk-btn--primary qk-btn--sm qk-action" id="qk-preset-save"
+                  data-tip="Capture the selected layers as a new preset">Save selection</button>
+        </div>
+
+        <div class="qk-preset-filters" id="qk-preset-filters" role="group" aria-label="Preset filter"></div>
+
+        <div class="qk-preset-folder-actions">
+          <button type="button" class="qk-btn qk-btn--ghost qk-btn--xs qk-action" id="qk-preset-new-folder"
+                  data-tip="Create a folder for your presets">New folder</button>
+          <button type="button" class="qk-btn qk-btn--ghost qk-btn--xs qk-action" id="qk-preset-delete-folder"
+                  data-tip="Delete the selected folder and move its presets to All" hidden>Delete folder</button>
+        </div>
+
+        <p class="qk-preset-note" id="qk-preset-note" hidden></p>
+
+        <div class="qk-preset-list" id="qk-preset-list" role="list" aria-label="Saved presets"></div>
+
+        <div class="qk-preset-empty" id="qk-preset-empty" hidden>
+          <div class="qk-preset-empty__mark" id="qk-preset-empty-mark" aria-hidden="true"></div>
+          <h2 class="qk-preset-empty__title" id="qk-preset-empty-title"></h2>
+          <p class="qk-preset-empty__body" id="qk-preset-empty-body"></p>
+          <div class="qk-preset-empty__actions" id="qk-preset-empty-actions"></div>
+        </div>
+
+        <div class="qk-preset-foot">
+          <div class="qk-preset-foot__actions">
+            <button type="button" class="qk-btn qk-btn--secondary qk-btn--sm qk-action" id="qk-preset-import"
+                    data-tip="Merge a .qkpack file into this list">Import pack</button>
+            <button type="button" class="qk-btn qk-btn--secondary qk-btn--sm qk-action" id="qk-preset-export"
+                    data-tip="Write the visible presets to one .qkpack file">Export pack</button>
+          </div>
+          <p class="qk-panel__hint" id="qk-preset-path">Stored locally in %APPDATA%\QuickKit\presets</p>
+        </div>
+      </section>
+
       <section class="qk-panel" id="qk-panel-text" data-panel="text" aria-label="Text animations" hidden>
         <p class="qk-panel__lead">Pick an animation, tune the timing, then apply it to the text layers selected in the Timeline.</p>
 
@@ -285,6 +329,21 @@
                 data-tip="Close this and start using QuickKit">Got it</button>
       </div>
       <p class="qk-dialog__foot">Open this again any time with the help button.</p>
+    </div>
+  </div>
+
+  <div class="qk-overlay" id="qk-preset-dialog" hidden>
+    <div class="qk-dialog" role="dialog" aria-modal="true" aria-labelledby="qk-preset-dialog-title">
+      <div class="qk-dialog__head">
+        <h1 class="qk-dialog__title" id="qk-preset-dialog-title"></h1>
+        <button type="button" class="qk-iconbtn" id="qk-preset-dialog-close" data-icon="close"
+                aria-label="Close" data-tip="Close"></button>
+      </div>
+      <div class="qk-preset-dialog__body" id="qk-preset-dialog-body"></div>
+      <div class="qk-dialog__actions">
+        <button type="button" class="qk-btn qk-btn--ghost" id="qk-preset-dialog-cancel">Cancel</button>
+        <button type="button" class="qk-btn qk-btn--primary" id="qk-preset-dialog-ok">Save</button>
+      </div>
     </div>
   </div>
 

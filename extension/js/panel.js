@@ -4,7 +4,7 @@
 (function (window, document) {
   "use strict";
 
-  var VERSION = "0.3.0";
+  var VERSION = "0.4.0";
   var WELCOME_KEY = "qk.welcome.v1";
   var HOST_TEST_TIMEOUT = 8000;
   var ACTION_TIMEOUT = 15000;
@@ -82,8 +82,9 @@
       label: "Presets",
       icon: "presets",
       host: "AEFT",
-      body: "Save your own animation presets and apply them in one click.",
-      hostNote: "Presets rely on After Effects .ffx files."
+      panelId: "presets",
+      body: "Save the selected layers as a reusable look and apply it in one click.",
+      hostNote: "Presets apply layer and text properties inside After Effects."
     },
     {
       id: "text",
@@ -141,7 +142,26 @@
     textTimer: null,
     textResetTimer: null,
     busy: false,
-    undoHinted: false
+    undoHinted: false,
+    presets: [],
+    presetFolders: [],
+    presetRoot: "",
+    presetNote: "",
+    presetSkipped: [],
+    presetSeeded: 0,
+    presetLoaded: false,
+    presetLoading: false,
+    presetLoadError: "",
+    presetQuery: "",
+    presetFolder: "",
+    presetFavorites: false,
+    presetDragId: null,
+    presetDragAfter: false,
+    presetMenuId: null,
+    presetDialogOnConfirm: null,
+    presetDialogOnCancel: null,
+    presetDialogReturnFocus: null,
+    presetDialogFields: []
   };
 
   var els = {};
@@ -206,9 +226,31 @@
     els.textSample = document.getElementById("qk-text-sample");
     els.textNote = document.getElementById("qk-text-note");
     els.textSlideControls = document.getElementById("qk-text-slide-controls");
+    els.presetSearch = document.getElementById("qk-preset-search");
+    els.presetSave = document.getElementById("qk-preset-save");
+    els.presetFilters = document.getElementById("qk-preset-filters");
+    els.presetNewFolder = document.getElementById("qk-preset-new-folder");
+    els.presetDeleteFolder = document.getElementById("qk-preset-delete-folder");
+    els.presetNote = document.getElementById("qk-preset-note");
+    els.presetList = document.getElementById("qk-preset-list");
+    els.presetEmpty = document.getElementById("qk-preset-empty");
+    els.presetEmptyMark = document.getElementById("qk-preset-empty-mark");
+    els.presetEmptyTitle = document.getElementById("qk-preset-empty-title");
+    els.presetEmptyBody = document.getElementById("qk-preset-empty-body");
+    els.presetEmptyActions = document.getElementById("qk-preset-empty-actions");
+    els.presetImport = document.getElementById("qk-preset-import");
+    els.presetExport = document.getElementById("qk-preset-export");
+    els.presetPath = document.getElementById("qk-preset-path");
+    els.presetDialog = document.getElementById("qk-preset-dialog");
+    els.presetDialogTitle = document.getElementById("qk-preset-dialog-title");
+    els.presetDialogBody = document.getElementById("qk-preset-dialog-body");
+    els.presetDialogOk = document.getElementById("qk-preset-dialog-ok");
+    els.presetDialogCancel = document.getElementById("qk-preset-dialog-cancel");
+    els.presetDialogClose = document.getElementById("qk-preset-dialog-close");
 
     els.panels = {
       anchor: document.getElementById("qk-panel-anchor"),
+      presets: document.getElementById("qk-panel-presets"),
       text: document.getElementById("qk-panel-text"),
       layers: document.getElementById("qk-panel-layers"),
       easing: document.getElementById("qk-panel-easing")
@@ -228,6 +270,8 @@
     initWelcome();
     setEasingPreset("easy");
     setTextPreset("fade", false);
+    bindPresets();
+    renderPresets();
   }
 
   function fillStaticIcons() {
@@ -330,6 +374,10 @@
 
     renderContent();
     if (id === "text") scheduleTextPreview();
+    if (id === "presets") {
+      if (state.hosted && !state.presetLoaded) loadPresets();
+      else renderPresets();
+    }
   }
 
   function renderContent() {
@@ -984,6 +1032,1050 @@
     if (els.textSlideControls) els.textSlideControls.hidden = kind !== "slide";
     if (animate === false) return;
     playTextPreview();
+  }
+
+  /* ---------- presets ---------- */
+
+  var PRESET_LIST_TIMEOUT = 15000;
+  var PRESET_ACTION_TIMEOUT = 20000;
+  var PRESET_DIALOG_TIMEOUT = 120000;
+  var PRESET_NEW_FOLDER = "__new__";
+
+  function presetColorCss(color) {
+    if (!color || !color.length) return "";
+    var parts = [];
+    for (var i = 0; i < 3; i++) {
+      var value = Number(color[i]);
+      if (!isFinite(value)) return "";
+      value = Math.round(Math.max(0, Math.min(1, value)) * 255);
+      var hex = value.toString(16);
+      parts.push(hex.length < 2 ? "0" + hex : hex);
+    }
+    return "#" + parts.join("");
+  }
+
+  function presetGlyph(preset) {
+    var glyph = preset.thumbnail && preset.thumbnail.glyph ? String(preset.thumbnail.glyph) : "";
+    if (!glyph) glyph = String(preset.name || "P").charAt(0).toUpperCase();
+    return glyph.substring(0, 2);
+  }
+
+  function presetMeta(preset) {
+    var folder = preset.folder ? preset.folder : "All";
+    var summary = preset.summary || (preset.layerCount + " layers");
+    return folder + " · " + summary;
+  }
+
+  function visiblePresets() {
+    var query = state.presetQuery.toLowerCase().replace(/^\s+|\s+$/g, "");
+    var folder = state.presetFolder.toLowerCase();
+    var out = [];
+
+    for (var i = 0; i < state.presets.length; i++) {
+      var preset = state.presets[i];
+      if (state.presetFavorites && !preset.favorite) continue;
+      if (!state.presetFavorites && folder !== "" && String(preset.folder || "").toLowerCase() !== folder) continue;
+      if (query !== "") {
+        var haystack = (String(preset.name || "") + " " + String(preset.folder || "") + " " + String(preset.summary || "")).toLowerCase();
+        if (haystack.indexOf(query) === -1) continue;
+      }
+      out.push(preset);
+    }
+    return out;
+  }
+
+  function presetCanReorder() {
+    return state.presetQuery === "" && !state.presetFavorites && state.presetFolder === "";
+  }
+
+  function presetInFolder(name) {
+    var count = 0;
+    for (var i = 0; i < state.presets.length; i++) {
+      if (String(state.presets[i].folder || "").toLowerCase() === String(name).toLowerCase()) count++;
+    }
+    return count;
+  }
+
+  function presetFavoriteCount() {
+    var count = 0;
+    for (var i = 0; i < state.presets.length; i++) {
+      if (state.presets[i].favorite) count++;
+    }
+    return count;
+  }
+
+  function setPresetControls() {
+    var hosted = state.hosted;
+    if (els.presetSave) els.presetSave.disabled = !hosted;
+    if (els.presetImport) els.presetImport.disabled = !hosted;
+    if (els.presetNewFolder) els.presetNewFolder.disabled = !hosted;
+    if (els.presetSearch) els.presetSearch.disabled = !hosted;
+
+    var visible = visiblePresets();
+    if (els.presetExport) {
+      els.presetExport.disabled = !hosted || visible.length === 0;
+      els.presetExport.setAttribute(
+        "data-tip",
+        visible.length ? "Write " + visible.length + " visible preset(s) to one .qkpack file" : "There are no presets to export"
+      );
+    }
+
+    var folderActive = state.presetFolder !== "" && !state.presetFavorites;
+    if (els.presetDeleteFolder) {
+      els.presetDeleteFolder.hidden = !hosted || !folderActive;
+      els.presetDeleteFolder.disabled = !hosted;
+    }
+  }
+
+  function updatePresetNote() {
+    if (!els.presetNote) return;
+    var parts = [];
+    if (state.presetNote) parts.push(state.presetNote);
+    if (state.presetSkipped && state.presetSkipped.length) {
+      parts.push(
+        state.presetSkipped.length +
+          (state.presetSkipped.length === 1 ? " damaged preset file was skipped." : " damaged preset files were skipped.")
+      );
+    }
+    if (state.presetSeeded) {
+      parts.push(state.presetSeeded + " starter presets were added.");
+    }
+    if (state.presets.length && !presetCanReorder()) {
+      parts.push("Clear the search or filter to drag presets into a new order.");
+    }
+    if (!state.hosted) {
+      parts.push("Open QuickKit inside After Effects to load and save presets.");
+    }
+
+    els.presetNote.textContent = parts.join(" ");
+    els.presetNote.hidden = parts.length === 0;
+  }
+
+  function renderPresetFilters() {
+    if (!els.presetFilters) return;
+    els.presetFilters.innerHTML = "";
+    els.presetFilters.hidden = !state.hosted || state.presets.length === 0;
+
+    function addChip(label, count, pressed, handler, tip) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "qk-preset-chip";
+      button.setAttribute("aria-pressed", pressed ? "true" : "false");
+      button.setAttribute("data-tip", tip || label);
+      button.appendChild(document.createTextNode(label));
+      if (typeof count === "number") {
+        var badge = document.createElement("span");
+        badge.className = "qk-preset-chip__count";
+        badge.textContent = String(count);
+        button.appendChild(badge);
+      }
+      button.addEventListener("click", handler);
+      els.presetFilters.appendChild(button);
+    }
+
+    addChip(
+      "All",
+      state.presets.length,
+      !state.presetFavorites && state.presetFolder === "",
+      function () {
+        state.presetFolder = "";
+        state.presetFavorites = false;
+        renderPresets();
+      },
+      "Show every preset"
+    );
+
+    addChip(
+      "Favourites",
+      presetFavoriteCount(),
+      state.presetFavorites,
+      function () {
+        state.presetFavorites = true;
+        state.presetFolder = "";
+        renderPresets();
+      },
+      "Show favourite presets"
+    );
+
+    for (var i = 0; i < state.presetFolders.length; i++) {
+      (function (folder) {
+        addChip(
+          folder,
+          presetInFolder(folder),
+          !state.presetFavorites && state.presetFolder === folder,
+          function () {
+            state.presetFolder = folder;
+            state.presetFavorites = false;
+            renderPresets();
+          },
+          "Show presets in " + folder
+        );
+      })(state.presetFolders[i]);
+    }
+  }
+
+  function showPresetEmpty(title, body, actions) {
+    if (!els.presetEmpty) return;
+    els.presetEmpty.hidden = false;
+    els.presetEmptyTitle.textContent = title;
+    els.presetEmptyBody.textContent = body;
+    if (els.presetEmptyMark) {
+      els.presetEmptyMark.innerHTML = window.QKIcons.svg("presets", 24);
+    }
+    if (els.presetEmptyActions) {
+      els.presetEmptyActions.innerHTML = "";
+      for (var i = 0; i < actions.length; i++) {
+        (function (action) {
+          var button = document.createElement("button");
+          button.type = "button";
+          button.className = "qk-btn qk-btn--sm qk-action " + (action.primary ? "qk-btn--primary" : "qk-btn--secondary");
+          button.textContent = action.label;
+          button.setAttribute("data-tip", action.tip || action.label);
+          button.disabled = !state.hosted && !action.allowPreview;
+          button.addEventListener("click", action.onClick);
+          els.presetEmptyActions.appendChild(button);
+        })(actions[i]);
+      }
+    }
+  }
+
+  function hidePresetEmpty() {
+    if (els.presetEmpty) els.presetEmpty.hidden = true;
+    if (els.presetEmptyActions) els.presetEmptyActions.innerHTML = "";
+  }
+
+  function renderPresets() {
+    if (!els.presetList) return;
+
+    renderPresetFilters();
+    updatePresetNote();
+
+    if (els.presetPath) {
+      els.presetPath.textContent = state.presetRoot
+        ? "Stored in " + state.presetRoot
+        : "Stored locally in %APPDATA%\\QuickKit\\presets";
+      els.presetPath.setAttribute("data-tip", els.presetPath.textContent);
+    }
+
+    while (els.presetList.firstChild) els.presetList.removeChild(els.presetList.firstChild);
+    els.presetList.hidden = false;
+    hidePresetEmpty();
+
+    if (!state.hosted) {
+      els.presetList.hidden = true;
+      showPresetEmpty(
+        "Presets need After Effects",
+        "Open QuickKit from Window > Extensions inside After Effects. The browser preview cannot read or write your preset folder.",
+        []
+      );
+      setPresetControls();
+      return;
+    }
+
+    if (state.presetLoading) {
+      var loading = document.createElement("div");
+      loading.className = "qk-preset-loading";
+      loading.textContent = "Loading presets…";
+      els.presetList.appendChild(loading);
+      setPresetControls();
+      return;
+    }
+
+    if (state.presetLoadError) {
+      els.presetList.hidden = true;
+      showPresetEmpty(
+        "Could not load presets",
+        state.presetLoadError,
+        [
+          {
+            label: "Try again",
+            primary: true,
+            tip: "Ask After Effects for the preset list again",
+            onClick: function () {
+              state.presetLoadError = "";
+              loadPresets();
+            }
+          }
+        ]
+      );
+      setPresetControls();
+      return;
+    }
+
+    if (!state.presets.length) {
+      els.presetList.hidden = true;
+      showPresetEmpty(
+        "No presets yet",
+        "Select layers in After Effects and save their look. You can also import a .qkpack file from another QuickKit install.",
+        [
+          { label: "Save selection", primary: true, tip: "Capture the selected layers", onClick: savePreset },
+          { label: "Import pack", primary: false, tip: "Merge a .qkpack file", onClick: importPack }
+        ]
+      );
+      setPresetControls();
+      return;
+    }
+
+    var visible = visiblePresets();
+    if (!visible.length) {
+      els.presetList.hidden = true;
+      var clearFilters = function () {
+        state.presetQuery = "";
+        state.presetFolder = "";
+        state.presetFavorites = false;
+        if (els.presetSearch) els.presetSearch.value = "";
+        renderPresets();
+      };
+      var emptyActions = [
+        { label: "Clear filters", primary: true, tip: "Show every preset", onClick: clearFilters }
+      ];
+      var emptyTitle = "No presets match";
+      var emptyBody = "Try a different search, or show every preset again.";
+
+      if (!state.presetQuery && state.presetFavorites) {
+        emptyTitle = "No favourites yet";
+        emptyBody = "Star a preset to keep it close. Favourites stay in their folders.";
+      } else if (!state.presetQuery && state.presetFolder) {
+        emptyTitle = "This folder is empty";
+        emptyBody = "Save the current selection here, or move an existing preset into this folder.";
+        emptyActions = [
+          { label: "Save here", primary: true, tip: "Save the selected layers into this folder", onClick: savePreset },
+          { label: "Show all presets", primary: false, tip: "Show every preset", onClick: clearFilters }
+        ];
+      }
+
+      showPresetEmpty(emptyTitle, emptyBody, emptyActions);
+      setPresetControls();
+      return;
+    }
+
+    for (var i = 0; i < visible.length; i++) {
+      els.presetList.appendChild(createPresetCard(visible[i]));
+    }
+    setPresetControls();
+  }
+
+  function createPresetCard(preset) {
+    var card = document.createElement("article");
+    card.className = "qk-preset-card";
+    card.setAttribute("role", "listitem");
+    card.setAttribute("data-id", preset.id);
+    card.draggable = presetCanReorder();
+
+    var main = document.createElement("button");
+    main.type = "button";
+    main.className = "qk-preset-card__main qk-action";
+    main.setAttribute("data-tip", "Apply " + preset.name + " to the selected layers");
+    main.addEventListener("click", function () {
+      applyPreset(preset.id, main);
+    });
+
+    var thumb = document.createElement("span");
+    thumb.className = "qk-preset-thumb";
+    var color = presetColorCss(preset.thumbnail && preset.thumbnail.color);
+    if (color) thumb.style.setProperty("--qk-preset-color", color);
+
+    var glyph = document.createElement("span");
+    glyph.className = "qk-preset-thumb__glyph";
+    glyph.textContent = presetGlyph(preset);
+    thumb.appendChild(glyph);
+
+    if (preset.thumbnail && preset.thumbnail.motion) {
+      var motion = document.createElement("span");
+      motion.className = "qk-preset-thumb__motion";
+      motion.setAttribute("aria-hidden", "true");
+      thumb.appendChild(motion);
+    }
+
+    var copy = document.createElement("span");
+    copy.className = "qk-preset-copy";
+    var name = document.createElement("span");
+    name.className = "qk-preset-name";
+    name.textContent = preset.name;
+    var meta = document.createElement("span");
+    meta.className = "qk-preset-meta";
+    meta.textContent = presetMeta(preset);
+    copy.appendChild(name);
+    copy.appendChild(meta);
+
+    main.appendChild(thumb);
+    main.appendChild(copy);
+
+    var star = document.createElement("button");
+    star.type = "button";
+    star.className = "qk-preset-card__icon qk-preset-card__icon--star qk-action";
+    star.setAttribute("aria-pressed", preset.favorite ? "true" : "false");
+    star.setAttribute("aria-label", preset.favorite ? "Remove from favourites" : "Add to favourites");
+    star.setAttribute("data-tip", preset.favorite ? "Remove from favourites" : "Add to favourites");
+    star.textContent = preset.favorite ? "★" : "☆";
+    star.addEventListener("click", function (event) {
+      event.stopPropagation();
+      toggleFavorite(preset, star);
+    });
+
+    var menuButton = document.createElement("button");
+    menuButton.type = "button";
+    menuButton.className = "qk-preset-card__icon qk-preset-card__icon--menu qk-action";
+    menuButton.setAttribute("aria-label", "Preset actions");
+    menuButton.setAttribute("aria-haspopup", "true");
+    menuButton.setAttribute("aria-expanded", state.presetMenuId === preset.id ? "true" : "false");
+    menuButton.setAttribute("data-tip", "Rename, move, export or delete this preset");
+    menuButton.textContent = "⋯";
+    menuButton.addEventListener("click", function (event) {
+      event.stopPropagation();
+      state.presetMenuId = state.presetMenuId === preset.id ? null : preset.id;
+      renderPresets();
+    });
+
+    card.appendChild(main);
+    card.appendChild(star);
+    card.appendChild(menuButton);
+
+    if (state.presetMenuId === preset.id) {
+      card.appendChild(createPresetMenu(preset));
+    }
+
+    if (presetCanReorder()) {
+      card.addEventListener("dragstart", function (event) {
+        state.presetDragId = preset.id;
+        state.presetDragAfter = false;
+        card.classList.add("is-dragging");
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = "move";
+          try {
+            event.dataTransfer.setData("text/plain", preset.id);
+          } catch (eData) {}
+        }
+      });
+      card.addEventListener("dragend", function () {
+        state.presetDragId = null;
+        clearPresetDropMarks();
+      });
+      card.addEventListener("dragover", function (event) {
+        if (!state.presetDragId || state.presetDragId === preset.id) return;
+        event.preventDefault();
+        var box = card.getBoundingClientRect();
+        var after = event.clientX > box.left + box.width / 2;
+        state.presetDragAfter = after;
+        clearPresetDropMarks();
+        card.classList.add(after ? "is-drop-after" : "is-drop-before");
+      });
+      card.addEventListener("dragleave", function (event) {
+        if (event.relatedTarget && card.contains(event.relatedTarget)) return;
+        card.classList.remove("is-drop-before");
+        card.classList.remove("is-drop-after");
+      });
+      card.addEventListener("drop", function (event) {
+        event.preventDefault();
+        if (!state.presetDragId || state.presetDragId === preset.id) return;
+        reorderPresets(state.presetDragId, preset.id, state.presetDragAfter);
+      });
+    }
+
+    return card;
+  }
+
+  function createPresetMenu(preset) {
+    var menu = document.createElement("div");
+    menu.className = "qk-preset-menu";
+    menu.setAttribute("role", "menu");
+    menu.addEventListener("click", function (event) {
+      event.stopPropagation();
+    });
+
+    function item(label, handler) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "qk-action";
+      button.setAttribute("role", "menuitem");
+      button.textContent = label;
+      button.addEventListener("click", function () {
+        closePresetMenus();
+        handler();
+      });
+      menu.appendChild(button);
+    }
+
+    item("Rename", function () {
+      renamePreset(preset);
+    });
+    item("Move to folder", function () {
+      movePreset(preset);
+    });
+    item("Export this preset", function () {
+      exportPresets([preset.id], els.presetExport);
+    });
+    item("Delete", function () {
+      deletePreset(preset);
+    });
+    return menu;
+  }
+
+  function clearPresetDropMarks() {
+    qsa(".qk-preset-card", els.presetList).forEach(function (card) {
+      card.classList.remove("is-dragging");
+      card.classList.remove("is-drop-before");
+      card.classList.remove("is-drop-after");
+    });
+  }
+
+  function reorderPresets(dragId, targetId, after) {
+    var ids = [];
+    for (var i = 0; i < state.presets.length; i++) ids.push(state.presets[i].id);
+    var from = ids.indexOf(dragId);
+    if (from === -1) return;
+    ids.splice(from, 1);
+    var to = ids.indexOf(targetId);
+    if (to === -1) to = ids.length;
+    if (after) to++;
+    ids.splice(to, 0, dragId);
+
+    state.presetDragId = null;
+    clearPresetDropMarks();
+
+    presetRequest(
+      "qkPresetReorder(" + qkQuote(JSON.stringify(ids)) + ")",
+      null,
+      PRESET_ACTION_TIMEOUT,
+      function (data) {
+        showMessage("ok", data.message || "Saved the new order.");
+        setStatus("Presets: order saved");
+        loadPresets();
+      },
+      function () {
+        renderPresets();
+      }
+    );
+  }
+
+  function presetRequest(script, button, timeout, onSuccess, onError) {
+    if (state.busy) return;
+    var bridge = window.CSInterfaceLite;
+    if (!bridge || !bridge.isHosted) {
+      var previewMessage = "QuickKit is not connected to After Effects. Open the panel inside the app and try again.";
+      showMessage("error", previewMessage);
+      setStatus("Preset action skipped");
+      if (onError) onError(previewMessage);
+      return;
+    }
+
+    setBusy(true, button);
+    var settled = false;
+    var timer = window.setTimeout(function () {
+      if (settled) return;
+      settled = true;
+      setBusy(false, button);
+      var timedOut = "After Effects did not answer in time. If a file dialog is open, finish or cancel it and try again.";
+      showMessage("error", timedOut);
+      setStatus("Preset action timed out");
+      if (onError) onError(timedOut);
+    }, timeout);
+
+    bridge.evalScript(script, function (raw) {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      setBusy(false, button);
+
+      var problem = "";
+      if (raw === null || raw === undefined || raw === "") {
+        problem = "The app returned nothing. If After Effects showed a script error, the QuickKit host file did not load. Run scripts\\install.bat again, restart the app and reopen the panel.";
+      } else if (String(raw) === "EvalScript error.") {
+        problem = "After Effects could not run the QuickKit preset script. Reinstall the panel and reopen it.";
+      }
+
+      var data = null;
+      if (!problem) {
+        try {
+          data = JSON.parse(String(raw));
+        } catch (eParse) {
+          data = null;
+        }
+        if (!data) problem = "QuickKit could not read the answer from After Effects: " + String(raw).slice(0, 120);
+        else if (!data.ok) problem = data.error || "After Effects reported a problem without details.";
+      }
+
+      if (problem) {
+        showMessage("error", problem);
+        setStatus("Preset action failed");
+        if (onError) onError(problem);
+        return;
+      }
+
+      if (onSuccess) onSuccess(data);
+    });
+  }
+
+  function loadPresets() {
+    if (!state.hosted || !els.presetList) {
+      renderPresets();
+      return;
+    }
+    if (state.presetLoading || state.busy) return;
+
+    state.presetLoading = true;
+    state.presetLoadError = "";
+    renderPresets();
+
+    presetRequest(
+      "qkPresetList()",
+      null,
+      PRESET_LIST_TIMEOUT,
+      function (data) {
+        state.presetLoading = false;
+        state.presets = data.presets instanceof Array ? data.presets : [];
+        state.presetFolders = data.folders instanceof Array ? data.folders : [];
+        state.presetRoot = data.root ? String(data.root) : "";
+        state.presetNote = data.note ? String(data.note) : "";
+        state.presetSkipped = data.skipped instanceof Array ? data.skipped : [];
+        state.presetSeeded = Number(data.seeded) || 0;
+        state.presetLoaded = true;
+        renderPresets();
+      },
+      function (message) {
+        state.presetLoading = false;
+        state.presetLoadError = message;
+        renderPresets();
+      }
+    );
+  }
+
+  function applyPreset(id, button) {
+    presetRequest(
+      "qkPresetApply(" + qkQuote(id) + ")",
+      button,
+      PRESET_ACTION_TIMEOUT,
+      function (data) {
+        var message = data.message || "Preset applied.";
+        showMessage("ok", message);
+        setStatus("Last action: " + message);
+        rememberUndoHint();
+      },
+      null
+    );
+  }
+
+  function toggleFavorite(preset, button) {
+    var next = !preset.favorite;
+    presetRequest(
+      "qkPresetFavorite(" + qkQuote(preset.id) + ", " + qkQuote(next ? "1" : "0") + ")",
+      button,
+      PRESET_ACTION_TIMEOUT,
+      function (data) {
+        preset.favorite = next;
+        showMessage("ok", data.message || "Favourite updated.");
+        setStatus("Presets: favourite updated");
+        renderPresets();
+      },
+      null
+    );
+  }
+
+  function presetFolderOptions() {
+    var options = [{ value: "", label: "All presets" }];
+    for (var i = 0; i < state.presetFolders.length; i++) {
+      options.push({ value: state.presetFolders[i], label: state.presetFolders[i] });
+    }
+    options.push({ value: PRESET_NEW_FOLDER, label: "New folder…" });
+    return options;
+  }
+
+  function savePreset() {
+    if (!state.hosted) {
+      showMessage("error", "Open QuickKit inside After Effects to save a preset.");
+      return;
+    }
+    var defaultFolder = !state.presetFavorites ? state.presetFolder : "";
+    openPresetDialog({
+      title: "Save selection as a preset",
+      okLabel: "Save preset",
+      fields: [
+        {
+          key: "name",
+          type: "text",
+          label: "Preset name",
+          value: "Preset " + (state.presets.length + 1),
+          placeholder: "e.g. Clean lower third",
+          maxlength: 60
+        },
+        { key: "folder", type: "select", label: "Folder", value: defaultFolder, options: presetFolderOptions() },
+        { key: "newFolder", type: "text", label: "New folder name", value: "", placeholder: "Only if you chose New folder…", maxlength: 40 }
+      ],
+      onConfirm: function (values) {
+        var name = qkTrimText(values.name);
+        var folder = values.folder;
+        if (!name) {
+          showMessage("error", "Give the preset a name first.");
+          return false;
+        }
+        if (folder === PRESET_NEW_FOLDER) {
+          folder = qkTrimText(values.newFolder);
+          if (!folder) {
+            showMessage("error", "Name the new folder or choose an existing one.");
+            return false;
+          }
+        }
+        closePresetDialog();
+        presetRequest(
+          "qkPresetSave(" + qkQuote(name) + ", " + qkQuote(folder) + ")",
+          els.presetSave,
+          PRESET_ACTION_TIMEOUT,
+          function (data) {
+            showMessage("ok", data.message || "Preset saved.");
+            setStatus("Presets: saved");
+            if (folder) {
+              state.presetFolder = folder;
+              state.presetFavorites = false;
+            }
+            loadPresets();
+          },
+          null
+        );
+        return true;
+      }
+    });
+  }
+
+  function renamePreset(preset) {
+    openPresetDialog({
+      title: "Rename preset",
+      okLabel: "Rename",
+      fields: [
+        { key: "name", type: "text", label: "Preset name", value: preset.name, maxlength: 60 }
+      ],
+      onConfirm: function (values) {
+        var name = qkTrimText(values.name);
+        if (!name) {
+          showMessage("error", "Give the preset a name first.");
+          return false;
+        }
+        closePresetDialog();
+        presetRequest(
+          "qkPresetRename(" + qkQuote(preset.id) + ", " + qkQuote(name) + ")",
+          null,
+          PRESET_ACTION_TIMEOUT,
+          function (data) {
+            showMessage("ok", data.message || "Preset renamed.");
+            setStatus("Presets: renamed");
+            loadPresets();
+          },
+          null
+        );
+        return true;
+      }
+    });
+  }
+
+  function movePreset(preset) {
+    openPresetDialog({
+      title: "Move preset",
+      okLabel: "Move",
+      fields: [
+        { key: "folder", type: "select", label: "Folder", value: preset.folder || "", options: presetFolderOptions() },
+        { key: "newFolder", type: "text", label: "New folder name", value: "", placeholder: "Only if you chose New folder…", maxlength: 40 }
+      ],
+      onConfirm: function (values) {
+        var folder = values.folder;
+        if (folder === PRESET_NEW_FOLDER) {
+          folder = qkTrimText(values.newFolder);
+          if (!folder) {
+            showMessage("error", "Name the new folder or choose All presets.");
+            return false;
+          }
+        }
+        closePresetDialog();
+        presetRequest(
+          "qkPresetMove(" + qkQuote(preset.id) + ", " + qkQuote(folder) + ")",
+          null,
+          PRESET_ACTION_TIMEOUT,
+          function (data) {
+            showMessage("ok", data.message || "Preset moved.");
+            setStatus("Presets: moved");
+            loadPresets();
+          },
+          null
+        );
+        return true;
+      }
+    });
+  }
+
+  function deletePreset(preset) {
+    openPresetDialog({
+      title: "Delete preset?",
+      okLabel: "Delete",
+      message: "Delete \"" + preset.name + "\"? This removes its local file. It cannot be undone from QuickKit.",
+      fields: [],
+      onConfirm: function () {
+        closePresetDialog();
+        presetRequest(
+          "qkPresetDelete(" + qkQuote(preset.id) + ")",
+          null,
+          PRESET_ACTION_TIMEOUT,
+          function (data) {
+            showMessage("ok", data.message || "Preset deleted.");
+            setStatus("Presets: deleted");
+            loadPresets();
+          },
+          null
+        );
+        return true;
+      }
+    });
+  }
+
+  function createFolder() {
+    if (!state.hosted) return;
+    openPresetDialog({
+      title: "New folder",
+      okLabel: "Create folder",
+      fields: [{ key: "name", type: "text", label: "Folder name", value: "", maxlength: 40 }],
+      onConfirm: function (values) {
+        var name = qkTrimText(values.name);
+        if (!name) {
+          showMessage("error", "Give the folder a name first.");
+          return false;
+        }
+        closePresetDialog();
+        presetRequest(
+          "qkFolderCreate(" + qkQuote(name) + ")",
+          els.presetNewFolder,
+          PRESET_ACTION_TIMEOUT,
+          function (data) {
+            showMessage("ok", data.message || "Folder created.");
+            setStatus("Presets: folder created");
+            state.presetFolder = name;
+            state.presetFavorites = false;
+            loadPresets();
+          },
+          null
+        );
+        return true;
+      }
+    });
+  }
+
+  function deleteFolder() {
+    var folder = state.presetFolder;
+    if (!folder) return;
+    openPresetDialog({
+      title: "Delete folder?",
+      okLabel: "Delete folder",
+      message: "Delete \"" + folder + "\"? Its presets are moved to All, not deleted.",
+      fields: [],
+      onConfirm: function () {
+        closePresetDialog();
+        presetRequest(
+          "qkFolderDelete(" + qkQuote(folder) + ")",
+          els.presetDeleteFolder,
+          PRESET_ACTION_TIMEOUT,
+          function (data) {
+            showMessage("ok", data.message || "Folder deleted.");
+            setStatus("Presets: folder deleted");
+            state.presetFolder = "";
+            state.presetFavorites = false;
+            loadPresets();
+          },
+          null
+        );
+        return true;
+      }
+    });
+  }
+
+  function importPack() {
+    presetRequest(
+      "qkPresetImport()",
+      els.presetImport,
+      PRESET_DIALOG_TIMEOUT,
+      function (data) {
+        showMessage("ok", data.message || "Pack imported.");
+        setStatus("Presets: imported");
+        loadPresets();
+      },
+      null
+    );
+  }
+
+  function exportPresets(ids, button) {
+    if (!ids || !ids.length) {
+      showMessage("error", "There are no presets to export in this view.");
+      return;
+    }
+    presetRequest(
+      "qkPresetExport(" + qkQuote(JSON.stringify(ids)) + ")",
+      button,
+      PRESET_DIALOG_TIMEOUT,
+      function (data) {
+        showMessage("ok", data.message || "Pack exported.");
+        setStatus("Presets: exported");
+      },
+      null
+    );
+  }
+
+  function exportVisiblePresets() {
+    var visible = visiblePresets();
+    var ids = [];
+    for (var i = 0; i < visible.length; i++) ids.push(visible[i].id);
+    exportPresets(ids, els.presetExport);
+  }
+
+  function qkTrimText(value) {
+    return String(value === null || value === undefined ? "" : value).replace(/^\s+|\s+$/g, "");
+  }
+
+  function openPresetDialog(options) {
+    if (!els.presetDialog) return;
+    state.presetDialogReturnFocus = document.activeElement;
+    state.presetDialogFields = [];
+    state.presetDialogOnConfirm = options.onConfirm || null;
+    state.presetDialogOnCancel = options.onCancel || null;
+
+    els.presetDialogTitle.textContent = options.title || "Preset";
+    els.presetDialogOk.textContent = options.okLabel || "Save";
+    els.presetDialogBody.innerHTML = "";
+
+    if (options.message) {
+      var message = document.createElement("p");
+      message.className = "qk-preset-dialog__message";
+      message.textContent = options.message;
+      els.presetDialogBody.appendChild(message);
+    }
+
+    var fields = options.fields || [];
+    for (var i = 0; i < fields.length; i++) {
+      (function (field) {
+        var label = document.createElement("label");
+        label.className = "qk-preset-dialog__field";
+        var caption = document.createElement("span");
+        caption.className = "qk-label";
+        caption.textContent = field.label;
+        label.appendChild(caption);
+
+        var input = null;
+        if (field.type === "select") {
+          input = document.createElement("select");
+          input.className = "qk-select";
+          var choices = field.options || [];
+          for (var j = 0; j < choices.length; j++) {
+            var option = document.createElement("option");
+            option.value = choices[j].value;
+            option.textContent = choices[j].label;
+            if (choices[j].value === field.value) option.selected = true;
+            input.appendChild(option);
+          }
+        } else {
+          input = document.createElement("input");
+          input.className = "qk-input";
+          input.type = "text";
+          input.value = field.value || "";
+          input.placeholder = field.placeholder || "";
+          if (field.maxlength) input.maxLength = field.maxlength;
+          input.autocomplete = "off";
+        }
+
+        input.addEventListener("keydown", function (event) {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            confirmPresetDialog();
+          }
+        });
+
+        label.appendChild(input);
+        els.presetDialogBody.appendChild(label);
+        state.presetDialogFields.push({ key: field.key, input: input });
+      })(fields[i]);
+    }
+
+    els.presetDialog.hidden = false;
+    var first = state.presetDialogFields.length ? state.presetDialogFields[0].input : null;
+    if (first) first.focus();
+    else els.presetDialogOk.focus();
+  }
+
+  function confirmPresetDialog() {
+    if (!els.presetDialog || els.presetDialog.hidden) return;
+    var values = {};
+    for (var i = 0; i < state.presetDialogFields.length; i++) {
+      values[state.presetDialogFields[i].key] = state.presetDialogFields[i].input.value;
+    }
+    var callback = state.presetDialogOnConfirm;
+    if (callback) {
+      var keepOpen = callback(values);
+      if (keepOpen === false) return;
+    }
+    closePresetDialog();
+  }
+
+  function closePresetDialog() {
+    if (!els.presetDialog || els.presetDialog.hidden) return;
+    els.presetDialog.hidden = true;
+    els.presetDialogBody.innerHTML = "";
+    state.presetDialogFields = [];
+    state.presetDialogOnConfirm = null;
+    state.presetDialogOnCancel = null;
+    if (state.presetDialogReturnFocus && typeof state.presetDialogReturnFocus.focus === "function") {
+      state.presetDialogReturnFocus.focus();
+    }
+    state.presetDialogReturnFocus = null;
+  }
+
+  function closePresetMenus() {
+    state.presetMenuId = null;
+    qsa(".qk-preset-menu", els.presetList).forEach(function (menu) {
+      menu.hidden = true;
+    });
+    qsa(".qk-preset-card__icon--menu", els.presetList).forEach(function (button) {
+      button.setAttribute("aria-expanded", "false");
+    });
+  }
+
+  function bindPresets() {
+    if (els.presetSearch) {
+      els.presetSearch.addEventListener("input", function () {
+        state.presetQuery = this.value || "";
+        state.presetMenuId = null;
+        renderPresets();
+      });
+    }
+
+    if (els.presetSave) els.presetSave.addEventListener("click", savePreset);
+    if (els.presetNewFolder) els.presetNewFolder.addEventListener("click", createFolder);
+    if (els.presetDeleteFolder) els.presetDeleteFolder.addEventListener("click", deleteFolder);
+    if (els.presetImport) els.presetImport.addEventListener("click", importPack);
+    if (els.presetExport) els.presetExport.addEventListener("click", exportVisiblePresets);
+
+    if (els.presetDialogOk) els.presetDialogOk.addEventListener("click", confirmPresetDialog);
+    if (els.presetDialogCancel) {
+      els.presetDialogCancel.addEventListener("click", function () {
+        closePresetDialog();
+      });
+    }
+    if (els.presetDialogClose) {
+      els.presetDialogClose.addEventListener("click", function () {
+        closePresetDialog();
+      });
+    }
+    if (els.presetDialog) {
+      els.presetDialog.addEventListener("click", function (event) {
+        if (event.target === els.presetDialog) closePresetDialog();
+      });
+    }
+
+    document.addEventListener("click", function (event) {
+      if (!state.presetMenuId) return;
+      if (event.target.closest(".qk-preset-menu")) return;
+      if (event.target.closest(".qk-preset-card__icon--menu")) return;
+      closePresetMenus();
+    });
+
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") {
+        if (els.presetDialog && !els.presetDialog.hidden) closePresetDialog();
+        else closePresetMenus();
+      }
+    });
   }
 
   /* ---------- welcome ---------- */

@@ -4,8 +4,9 @@ A free, local-only panel for **Adobe After Effects** and **Adobe Premiere Pro**
 on Windows 10 and 11. One extension, seven tools, no account, no cloud, no
 tracking.
 
-Version **0.3.0** — Part 3: text animations join the live After Effects tools
-(anchor, text, layers, easing), plus the Part 1 shell, host test and installer.
+Version **0.4.0** — Part 4: a full preset manager joins the live After Effects
+tools (anchor, text, layers, easing), plus the Part 1 shell, host test and
+installer.
 
 ---
 
@@ -15,6 +16,8 @@ Version **0.3.0** — Part 3: text animations join the live After Effects tools
 - Seven tabs: Anchor, Presets, Text, Easing, Layers, Silence, Bridge.
 - Tabs that do not apply to the app you are in say **"Available in Premiere
   Pro"** or **"Available in After Effects"** instead of disappearing.
+- A **Presets** library with folders, search, favourites, drag reordering,
+  pack import/export and 15 original starters — all stored on your PC.
 - **Test host connection** asks the app for its name and version and shows the
   answer. This is the proof the panel talks to the application.
 - A welcome screen on first run, and a help button to bring it back.
@@ -22,8 +25,8 @@ Version **0.3.0** — Part 3: text animations join the live After Effects tools
   something to undo).
 - Works from a 240px to 600px wide panel.
 
-The Anchor, Text, Layers and Easing tabs are live in After Effects. Presets and
-Bridge are still shells, and the Premiere-only Silence tab stays locked until
+The Anchor, Presets, Text, Layers and Easing tabs are live in After Effects.
+Bridge is still a shell, and the Premiere-only Silence tab stays locked until
 its tool exists. Every tool press is **one undo group**: press Ctrl+Z once in
 After Effects to reverse the whole action.
 
@@ -79,6 +82,28 @@ out points.
   only and never calls the app.
 - Text animations are After Effects-only; Premiere shows the tab as
   **Available in After Effects**.
+
+### Presets
+Save a look once and apply it to any layer later. Everything lives in
+`%APPDATA%\QuickKit\presets` on your PC.
+- **Save** uses the selected layers, or only the selected property rows when
+  you have picked some. A layer preset captures transform values, text style
+  (font, size, tracking, leading, fill colour, stroke), effect parameters,
+  static values and keyframes with their easing. Text content is never stored.
+- **Apply** writes the saved properties to the selected layers inside one undo
+group. A preset captured from one layer works on every selected layer; a
+multi-layer preset maps layer by layer.
+- **Folders, search and favourites.** Folders are labels, not disk folders, so
+a preset can be organised without moving files. Search ignores case;
+favourites filter with one click.
+- **Rename, delete and drag to reorder.** All view only; drag is disabled while
+a search or folder filter is active.
+- **Import / export a pack** (`.qkpack`) as one file. Import merges with new ids
+and renames duplicates instead of overwriting anything.
+- **15 starter presets** across Titles, Styles and Motion, created for QuickKit.
+They are seeded on first run; delete them all to see the empty state.
+- A damaged preset file is skipped with a note under the list; the panel keeps
+working and never crashes on it.
 
 ---
 
@@ -178,9 +203,9 @@ exact `reg delete` command if you want to remove them yourself.
 - Re-run `install.bat`: a partial copy is the usual cause of a blank panel.
 
 ### "Available in Premiere Pro" or "Available in After Effects"
-That is by design. Anchor, Text, Easing and Layers use After Effects features;
-Presets needs AE presets, and Silence works on Premiere sequences. The tab
-stays visible so the panel looks the same in both apps.
+That is by design. Anchor, Presets, Text, Easing and Layers use After Effects
+features; Silence will work on Premiere sequences. The tab stays visible so the
+panel looks the same in both apps.
 
 ### A tool says it cannot reach the app
 - The panel is open in a browser, not inside After Effects. Open it from
@@ -206,6 +231,10 @@ on non-numeric properties (text, masks, colours are skipped).
   Opened in a normal browser it shows a preview state instead.
 - If `host\quickkit.jsx` is missing from the installed folder, ExtendScript
   cannot run; re-run `install.bat`.
+- If **every** button says it cannot reach the app and After Effects shows
+  `Unable to execute script at line … Illegal use of reserved word`, the
+  installed host file is from an old build that does not parse. Re-run
+  `scripts\install.bat`, close After Effects completely and reopen it.
 
 ### The welcome screen comes back every time
 Panel storage is blocked. Everything else still works; use **Got it** each
@@ -244,8 +273,8 @@ QuickKit/
   host/             ExtendScript (quickkit.jsx)
   design/           tokens.css, DESIGN_SYSTEM.md, Inter, icons
   scripts/          install.bat, uninstall.bat
-  docs/             licenses, manual test checklists
-  tests/            check-static.js, host-logic.test.js
+  docs/             licenses, manual test checklists, preset format
+  tests/            check-static.js, host-logic.test.js, ES3 scanner
   PROJECT_RULES.md  permanent project rules
   PROGRESS.md       living status
 ```
@@ -271,7 +300,14 @@ QuickKit/
   ExtendScript.
 - Static checks: `node tests/check-static.js` (no dependencies).
 - Chrome/CEF in CEP 12 is Chromium 99, so avoid newer CSS
-  (`color-mix`, `:has`, container queries).- Manual test plans: `docs/manual-test-checklist-part1.md`, `docs/manual-test-checklist-part2.md`, `docs/manual-test-checklist-part3.md`.
+  (`color-mix`, `:has`, container queries).
+- `host/quickkit.jsx` runs as ExtendScript, which is ES3: no `const`, `let`,
+  arrows, template strings, trailing commas, or reserved words as object keys.
+  `tests/check-static.js` rejects those and reports the line.
+- Manual test plans: `docs/manual-test-checklist-part1.md`,
+  `docs/manual-test-checklist-part2.md`,
+  `docs/manual-test-checklist-part3.md`,
+  `docs/manual-test-checklist-part4.md`.
 
 ---
 

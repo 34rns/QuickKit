@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QuickKit</title>
+  <link rel="stylesheet" href="design/tokens.css">
+  <link rel="stylesheet" href="css/panel.css">
+  <link rel="stylesheet" href="css/tools.css">
+</head>
+<body>
+  <div class="qk-app" id="qk-app">
+    <header class="qk-header">
+      <div class="qk-brand">
+        <span class="qk-brand__mark" aria-hidden="true"></span>
+        <span class="qk-brand__name">QuickKit</span>
+        <span class="qk-brand__version" id="qk-version"></span>
+      </div>
+      <div class="qk-header__actions">
+        <button type="button" class="qk-iconbtn" id="qk-help" data-icon="help"
+                aria-label="Help and setup steps" data-tip="Help and setup steps"></button>
+      </div>
+    </header>
+
+    <section class="qk-hostcard" id="qk-hostcard" aria-labelledby="qk-hostcard-title">
+      <div class="qk-hostcard__head">
+        <h2 class="qk-hostcard__title" id="qk-hostcard-title">Host</h2>
+        <span class="qk-chip" id="qk-host-state">Not checked</span>
+      </div>
+      <div class="qk-hostcard__live" aria-live="polite">
+        <p class="qk-hostcard__value" id="qk-host-value">No host yet</p>
+        <p class="qk-hostcard__detail" id="qk-host-detail">Press Test host connection to ask the app what it is.</p>
+      </div>
+      <button type="button" class="qk-btn qk-btn--primary qk-btn--sm" id="qk-test-host"
+              data-tip="Calls a function inside After Effects or Premiere Pro and shows what comes back">
+        <span class="qk-btn__icon" data-icon="plug"></span>
+        <span class="qk-btn__label">Test host connection</span>
+      </button>
+    </section>
+
+    <nav class="qk-tabs" id="qk-tabs" role="tablist" aria-label="QuickKit tools"></nav>
+
+    <main class="qk-content" id="qk-content" tabindex="-1">
+      <div class="qk-msg" id="qk-message" role="status" aria-live="polite" hidden>
+        <span class="qk-msg__icon" id="qk-message-icon" aria-hidden="true"></span>
+        <span class="qk-msg__text" id="qk-message-text"></span>
+      </div>
+
+      <section class="qk-panel" id="qk-panel-anchor" data-panel="anchor" aria-label="Anchor point" hidden>
+        <p class="qk-panel__lead">Click a cell to put the anchor point there. The layer stays exactly where it is.</p>
+        <div class="qk-grid" role="group" aria-label="Anchor position">
+          <button type="button" class="qk-grid__cell" data-anchor="top-left" aria-label="Anchor top left" data-tip="Anchor top left"><span class="qk-grid__dot qk-grid__dot--tl" aria-hidden="true"></span></button>
+          <button type="button" class="qk-grid__cell" data-anchor="top-center" aria-label="Anchor top center" data-tip="Anchor top center"><span class="qk-grid__dot qk-grid__dot--tc" aria-hidden="true"></span></button>
+          <button type="button" class="qk-grid__cell" data-anchor="top-right" aria-label="Anchor top right" data-tip="Anchor top right"><span class="qk-grid__dot qk-grid__dot--tr" aria-hidden="true"></span></button>
+          <button type="button" class="qk-grid__cell" data-anchor="middle-left" aria-label="Anchor middle left" data-tip="Anchor middle left"><span class="qk-grid__dot qk-grid__dot--ml" aria-hidden="true"></span></button>
+          <button type="button" class="qk-grid__cell" data-anchor="middle-center" aria-label="Anchor middle center" data-tip="Anchor middle center"><span class="qk-grid__dot qk-grid__dot--mc" aria-hidden="true"></span></button>
+          <button type="button" class="qk-grid__cell" data-anchor="middle-right" aria-label="Anchor middle right" data-tip="Anchor middle right"><span class="qk-grid__dot qk-grid__dot--mr" aria-hidden="true"></span></button>
+          <button type="button" class="qk-grid__cell" data-anchor="bottom-left" aria-label="Anchor bottom left" data-tip="Anchor bottom left"><span class="qk-grid__dot qk-grid__dot--bl" aria-hidden="true"></span></button>
+          <button type="button" class="qk-grid__cell" data-anchor="bottom-center" aria-label="Anchor bottom center" data-tip="Anchor bottom center"><span class="qk-grid__dot qk-grid__dot--bc" aria-hidden="true"></span></button>
+          <button type="button" class="qk-grid__cell" data-anchor="bottom-right" aria-label="Anchor bottom right" data-tip="Anchor bottom right"><span class="qk-grid__dot qk-grid__dot--br" aria-hidden="true"></span></button>
+        </div>
+        <button type="button" class="qk-btn qk-btn--secondary qk-btn--block qk-action" id="qk-anchor-center"
+                data-tip="Put every selected layer's anchor at the middle of the whole selection">Center of selected layers</button>
+        <p class="qk-panel__hint">Works on multiple layers, text and shape layers. Scale, rotation and parents are compensated. One Ctrl+Z undoes the whole press.</p>
+      </section>
+
+      <section class="qk-panel" id="qk-panel-layers" data-panel="layers" aria-label="Layers" hidden>
+        <p class="qk-panel__lead">Tools that work on the layers you have selected in the Timeline.</p>
+
+        <details class="qk-sec" open>
+          <summary class="qk-sec__summary" data-tip="Prefix, suffix, find/replace and numbering for layer names">Bulk rename</summary>
+          <div class="qk-sec__body">
+            <div class="qk-field-row">
+              <label class="qk-field"><span class="qk-label">Prefix</span>
+                <input class="qk-input" id="qk-rename-prefix" type="text" placeholder="e.g. UI_" data-tip="Text added before each name">
+              </label>
+              <label class="qk-field"><span class="qk-label">Suffix</span>
+                <input class="qk-input" id="qk-rename-suffix" type="text" placeholder="e.g. _v2" data-tip="Text added after each name">
+              </label>
+            </div>
+            <div class="qk-field-row">
+              <label class="qk-field"><span class="qk-label">Find</span>
+                <input class="qk-input" id="qk-rename-find" type="text" placeholder="old text" data-tip="Text to replace in the current name">
+              </label>
+              <label class="qk-field"><span class="qk-label">Replace</span>
+                <input class="qk-input" id="qk-rename-replace" type="text" placeholder="new text" data-tip="Replacement text">
+              </label>
+            </div>
+            <div class="qk-field-row">
+              <label class="qk-field"><span class="qk-label">Number from</span>
+                <input class="qk-input" id="qk-rename-start" type="number" value="1" min="0" data-tip="First number used for numbering">
+              </label>
+              <label class="qk-field"><span class="qk-label">Digits</span>
+                <input class="qk-input" id="qk-rename-pad" type="number" value="2" min="1" max="6" data-tip="Zero padding, 1 to 6 digits">
+              </label>
+            </div>
+            <label class="qk-check">
+              <input type="checkbox" id="qk-rename-numbering" checked data-tip="Number each layer; {n} in prefix or suffix decides where">
+              <span>Number the layers (<code>{n}</code> in prefix or suffix, otherwise appended)</span>
+            </label>
+            <button type="button" class="qk-btn qk-btn--secondary qk-btn--block qk-action" id="qk-rename-apply"
+                    data-tip="Rename every selected layer with these settings">Rename selected layers</button>
+          </div>
+        </details>
+
+        <details class="qk-sec">
+          <summary class="qk-sec__summary" data-tip="Offset each selected layer's start time in order">Stagger start times</summary>
+          <div class="qk-sec__body">
+            <div class="qk-field-row">
+              <label class="qk-field"><span class="qk-label">Offset</span>
+                <input class="qk-input" id="qk-stagger-offset" type="number" value="2" min="0" step="1" data-tip="Gap between each layer's start">
+              </label>
+              <label class="qk-field"><span class="qk-label">Unit</span>
+                <select class="qk-select" id="qk-stagger-unit" data-tip="Frames follow the composition frame rate">
+                  <option value="frames">Frames</option>
+                  <option value="seconds">Seconds</option>
+                </select>
+              </label>
+            </div>
+            <button type="button" class="qk-btn qk-btn--secondary qk-btn--block qk-action" id="qk-stagger-apply"
+                    data-tip="Keep the earliest layer in place, offset the rest by the amount">Stagger start times</button>
+          </div>
+        </details>
+
+        <details class="qk-sec">
+          <summary class="qk-sec__summary" data-tip="Create a null at the selection centre and parent the selected layers to it">Null and parent</summary>
+          <div class="qk-sec__body">
+            <button type="button" class="qk-btn qk-btn--secondary qk-btn--block qk-action" id="qk-null-apply"
+                    data-tip="Adds a null layer and parents every selected layer to it">Create null and parent selection</button>
+            <p class="qk-panel__hint">Parenting keeps the layers where they are; moving the null moves them together.</p>
+          </div>
+        </details>
+
+        <details class="qk-sec">
+          <summary class="qk-sec__summary" data-tip="Lay the selected layers out back to back">Sequence layers</summary>
+          <div class="qk-sec__body">
+            <button type="button" class="qk-btn qk-btn--secondary qk-btn--block qk-action" id="qk-sequence-apply"
+                    data-tip="Start each layer where the previous one ends">Sequence end to start</button>
+          </div>
+        </details>
+
+        <details class="qk-sec">
+          <summary class="qk-sec__summary" data-tip="Put the selected layers into a new precomposition">Precompose</summary>
+          <div class="qk-sec__body">
+            <label class="qk-field"><span class="qk-label">New composition name</span>
+              <input class="qk-input" id="qk-precompose-name" type="text" placeholder="QuickKit Precomp" data-tip="Leave empty for QuickKit Precomp">
+            </label>
+            <button type="button" class="qk-btn qk-btn--secondary qk-btn--block qk-action" id="qk-precompose-apply"
+                    data-tip="Selected layers move into the new composition, transforms preserved">Precompose selection</button>
+          </div>
+        </details>
+      </section>
+
+      <section class="qk-panel qk-panel--presets" id="qk-panel-presets" data-panel="presets" aria-label="Presets" hidden>
+        <p class="qk-panel__lead">Save the selected layers as a reusable look, then click a preset to apply it to the selection.</p>
+
+        <div class="qk-preset-toolbar">
+          <label class="qk-preset-search">
+            <span class="qk-preset-search__label">Search</span>
+            <input class="qk-input" id="qk-preset-search" type="search" placeholder="Name or folder" autocomplete="off"
+                   data-tip="Filter presets by name or folder">
+          </label>
+          <button type="button" class="qk-btn qk-btn--primary qk-btn--sm qk-action" id="qk-preset-save"
+                  data-tip="Capture the selected layers as a new preset">Save selection</button>
+        </div>
+
+        <div class="qk-preset-filters" id="qk-preset-filters" role="group" aria-label="Preset filter"></div>
+
+        <div class="qk-preset-folder-actions">
+          <button type="button" class="qk-btn qk-btn--ghost qk-btn--xs qk-action" id="qk-preset-new-folder"
+                  data-tip="Create a folder for your presets">New folder</button>
+          <button type="button" class="qk-btn qk-btn--ghost qk-btn--xs qk-action" id="qk-preset-delete-folder"
+                  data-tip="Delete the selected folder and move its presets to All" hidden>Delete folder</button>
+        </div>
+
+        <p class="qk-preset-note" id="qk-preset-note" hidden></p>
+
+        <div class="qk-preset-list" id="qk-preset-list" role="list" aria-label="Saved presets"></div>
+
+        <div class="qk-preset-empty" id="qk-preset-empty" hidden>
+          <div class="qk-preset-empty__mark" id="qk-preset-empty-mark" aria-hidden="true"></div>
+          <h2 class="qk-preset-empty__title" id="qk-preset-empty-title"></h2>
+          <p class="qk-preset-empty__body" id="qk-preset-empty-body"></p>
+          <div class="qk-preset-empty__actions" id="qk-preset-empty-actions"></div>
+        </div>
+
+        <div class="qk-preset-foot">
+          <div class="qk-preset-foot__actions">
+            <button type="button" class="qk-btn qk-btn--secondary qk-btn--sm qk-action" id="qk-preset-import"
+                    data-tip="Merge a .qkpack file into this list">Import pack</button>
+            <button type="button" class="qk-btn qk-btn--secondary qk-btn--sm qk-action" id="qk-preset-export"
+                    data-tip="Write the visible presets to one .qkpack file">Export pack</button>
+          </div>
+          <p class="qk-panel__hint" id="qk-preset-path">Stored locally in %APPDATA%\QuickKit\presets</p>
+        </div>
+      </section>
+
+      <section class="qk-panel" id="qk-panel-text" data-panel="text" aria-label="Text animations" hidden>
+        <p class="qk-panel__lead">Pick an animation, tune the timing, then apply it to the text layers selected in the Timeline.</p>
+
+        <div class="qk-presets" role="group" aria-label="Text animation preset">
+          <button type="button" class="qk-preset" data-text-preset="fade" aria-pressed="true" data-tip="Fade the layer's opacity in and out">Fade</button>
+          <button type="button" class="qk-preset" data-text-preset="slide" aria-pressed="false" data-tip="Slide the layer in from one side and back out">Slide</button>
+          <button type="button" class="qk-preset" data-text-preset="pop" aria-pressed="false" data-tip="Scale up from 80 per cent with a soft landing">Scale pop</button>
+          <button type="button" class="qk-preset" data-text-preset="typewriter" aria-pressed="false" data-tip="Reveal characters one by one with a named, editable text animator">Typewriter</button>
+          <button type="button" class="qk-preset" data-text-preset="stagger" aria-pressed="false" data-tip="Characters fade and rise into place with a named text animator">Stagger</button>
+          <button type="button" class="qk-preset" data-text-preset="blur" aria-pressed="false" data-tip="Characters sharpen from a blur with a named text animator">Blur reveal</button>
+        </div>
+
+        <div class="qk-text-stage" id="qk-text-stage" aria-hidden="true">
+          <div class="qk-text-stage__sample" id="qk-text-sample">QuickKit</div>
+        </div>
+        <p class="qk-panel__hint" id="qk-text-note">Fades the layer's own opacity from 0 to its current value, then back to 0.</p>
+
+        <div class="qk-field-row">
+          <label class="qk-field"><span class="qk-label">Duration (s)</span>
+            <input class="qk-input" id="qk-text-duration" type="number" value="0.6" min="0.1" max="60" step="0.1" data-tip="How long the in and out animations last">
+          </label>
+          <label class="qk-field"><span class="qk-label">Delay (s)</span>
+            <input class="qk-input" id="qk-text-delay" type="number" value="0" min="0" max="60" step="0.1" data-tip="Wait this long after the in point and before the out point">
+          </label>
+        </div>
+
+        <label class="qk-field"><span class="qk-label">Easing</span>
+          <select class="qk-select" id="qk-text-easing" data-tip="Smooth eases at both ends, snappy moves fast, linear is even">
+            <option value="smooth">Smooth</option>
+            <option value="snappy">Snappy</option>
+            <option value="linear">Linear</option>
+          </select>
+        </label>
+
+        <div class="qk-field-row" id="qk-text-slide-controls">
+          <label class="qk-field"><span class="qk-label">From</span>
+            <select class="qk-select" id="qk-text-direction" data-tip="The side the layer comes from and leaves towards">
+              <option value="left">Left</option>
+              <option value="right">Right</option>
+              <option value="up">Above</option>
+              <option value="down">Below</option>
+            </select>
+          </label>
+          <label class="qk-field"><span class="qk-label">Distance (px)</span>
+            <input class="qk-input" id="qk-text-distance" type="number" value="80" min="1" max="4000" step="10" data-tip="How far away the slide starts">
+          </label>
+        </div>
+
+        <div class="qk-text-edges">
+          <label class="qk-check">
+            <input type="checkbox" id="qk-text-in" checked data-tip="Key the animation at the layer's in point">
+            <span>Animate in at the layer's in point</span>
+          </label>
+          <label class="qk-check">
+            <input type="checkbox" id="qk-text-out" checked data-tip="Key the animation to finish at the layer's out point">
+            <span>Animate out at the layer's out point</span>
+          </label>
+        </div>
+
+        <button type="button" class="qk-btn qk-btn--primary qk-btn--block qk-action" id="qk-text-apply"
+                data-tip="Apply the chosen animation to every selected layer">Apply to selected layers</button>
+        <p class="qk-panel__hint">Fade, slide and scale pop use the layer's own transform. Typewriter, stagger and blur add a named text animator you can keep editing. One Ctrl+Z undoes the press.</p>
+      </section>
+
+      <section class="qk-panel" id="qk-panel-easing" data-panel="easing" aria-label="Easing" hidden>
+        <p class="qk-panel__lead">Pick a curve, then apply it to the keyframes you selected in the Timeline.</p>
+        <div class="qk-presets" role="group" aria-label="Easing preset">
+          <button type="button" class="qk-preset" data-easing="easy" aria-pressed="true" data-tip="Smooth in and out, the everyday choice">Easy ease</button>
+          <button type="button" class="qk-preset" data-easing="strong" aria-pressed="false" data-tip="Sharper hold at both ends">Strong</button>
+          <button type="button" class="qk-preset" data-easing="overshoot" aria-pressed="false" data-tip="Slides past the value, then settles">Overshoot</button>
+          <button type="button" class="qk-preset" data-easing="bounce" aria-pressed="false" data-tip="Springs back a few times">Bounce</button>
+        </div>
+        <div class="qk-curve">
+          <svg class="qk-curve__svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+            <line class="qk-curve__axis" x1="0" y1="100" x2="100" y2="100"></line>
+            <line class="qk-curve__axis" x1="0" y1="0" x2="0" y2="100"></line>
+            <path class="qk-curve__path" id="qk-curve-path" d="M 4 96 C 28 96 30 4 96 4"></path>
+          </svg>
+        </div>
+        <p class="qk-panel__hint" id="qk-curve-note">Smooth acceleration in and out. The everyday default.</p>
+        <button type="button" class="qk-btn qk-btn--primary qk-btn--block qk-action" id="qk-easing-apply"
+                data-tip="Apply the chosen curve to every selected keyframe">Apply to selected keyframes</button>
+      </section>
+
+      <div id="qk-empty-slot" hidden></div>
+    </main>
+
+    <footer class="qk-statusbar">
+      <span class="qk-statusbar__action" id="qk-last-action">Ready</span>
+      <button type="button" class="qk-btn qk-btn--ghost qk-btn--xs" id="qk-undo" disabled
+              data-tip="Nothing to undo yet. Actions appear here once QuickKit can reverse them.">
+        <span class="qk-btn__icon" data-icon="undo"></span>
+        <span class="qk-btn__label">Undo</span>
+      </button>
+    </footer>
+  </div>
+
+  <div class="qk-overlay" id="qk-welcome" hidden>
+    <div class="qk-dialog" role="dialog" aria-modal="true"
+         aria-labelledby="qk-welcome-title" aria-describedby="qk-welcome-lead">
+      <div class="qk-dialog__head">
+        <h1 class="qk-dialog__title" id="qk-welcome-title">Welcome to QuickKit</h1>
+        <button type="button" class="qk-iconbtn" id="qk-welcome-close" data-icon="close"
+                aria-label="Close welcome" data-tip="Close"></button>
+      </div>
+      <p class="qk-dialog__lead" id="qk-welcome-lead">A free toolkit for After Effects and Premiere Pro. Three steps and you are set up.</p>
+      <ol class="qk-steps">
+        <li class="qk-step">
+          <span class="qk-step__num">1</span>
+          <div class="qk-step__text">
+            <strong>Run the installer</strong>
+            <span>Double-click <code>scripts\install.bat</code> in the QuickKit folder. No admin rights needed.</span>
+          </div>
+        </li>
+        <li class="qk-step">
+          <span class="qk-step__num">2</span>
+          <div class="qk-step__text">
+            <strong>Restart the app</strong>
+            <span>Close After Effects or Premiere Pro completely, then open it again.</span>
+          </div>
+        </li>
+        <li class="qk-step">
+          <span class="qk-step__num">3</span>
+          <div class="qk-step__text">
+            <strong>Open the panel</strong>
+            <span>Go to <code>Window &gt; Extensions &gt; QuickKit</code>.</span>
+          </div>
+        </li>
+      </ol>
+      <div class="qk-dialog__actions">
+        <button type="button" class="qk-btn qk-btn--primary" id="qk-welcome-ok"
+                data-tip="Close this and start using QuickKit">Got it</button>
+      </div>
+      <p class="qk-dialog__foot">Open this again any time with the help button.</p>
+    </div>
+  </div>
+
+  <div class="qk-overlay" id="qk-preset-dialog" hidden>
+    <div class="qk-dialog" role="dialog" aria-modal="true" aria-labelledby="qk-preset-dialog-title">
+      <div class="qk-dialog__head">
+        <h1 class="qk-dialog__title" id="qk-preset-dialog-title"></h1>
+        <button type="button" class="qk-iconbtn" id="qk-preset-dialog-close" data-icon="close"
+                aria-label="Close" data-tip="Close"></button>
+      </div>
+      <div class="qk-preset-dialog__body" id="qk-preset-dialog-body"></div>
+      <div class="qk-dialog__actions">
+        <button type="button" class="qk-btn qk-btn--ghost" id="qk-preset-dialog-cancel">Cancel</button>
+        <button type="button" class="qk-btn qk-btn--primary" id="qk-preset-dialog-ok">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="qk-tooltip" id="qk-tooltip" role="tooltip" hidden></div>
+
+  <script src="design/icons/icons.js"></script>
+  <script src="fake-cep.js"></script>
+  <script src="js/csinterface-lite.js"></script>
+  <script src="js/panel.js"></script>
+</body>
+</html>

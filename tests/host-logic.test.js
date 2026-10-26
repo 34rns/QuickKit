@@ -111,6 +111,11 @@ function MockKeyable(opts) {
   this.expressionEnabled = !!opts.expressionEnabled;
   this.easeCalls = [];
   this.interpolationCalls = [];
+  this.removedKeys = [];
+  this.propertyType = 1;
+  this.propertyValueType = opts.propertyValueType || 1;
+  this.matchName = opts.matchName || "";
+  this.name = opts.name || "";
 }
 
 Object.defineProperty(MockKeyable.prototype, "value", {
@@ -137,6 +142,46 @@ MockKeyable.prototype.setValueAtTime = function (time, value) {
   });
   if (this.setter) this.setter(value);
   else this.store = value;
+};
+
+MockKeyable.prototype.valueAtTime = function (time) {
+  if (this.keys.length) {
+    var found = this.keys[0].value;
+    for (var i = 0; i < this.keys.length; i++) {
+      if (this.keys[i].time <= time) found = this.keys[i].value;
+    }
+    return found;
+  }
+  return this.value;
+};
+
+MockKeyable.prototype.keyTime = function (index) {
+  return this.keys[index - 1].time;
+};
+
+MockKeyable.prototype.keyValue = function (index) {
+  return this.keys[index - 1].value;
+};
+
+MockKeyable.prototype.keyInInterpolationType = function () {
+  return 2;
+};
+
+MockKeyable.prototype.keyOutInterpolationType = function () {
+  return 2;
+};
+
+MockKeyable.prototype.keyInTemporalEase = function () {
+  return [{ speed: 0, influence: 33.3 }];
+};
+
+MockKeyable.prototype.keyOutTemporalEase = function () {
+  return [{ speed: 0, influence: 33.3 }];
+};
+
+MockKeyable.prototype.removeKey = function (index) {
+  this.removedKeys.push(index);
+  this.keys.splice(index - 1, 1);
 };
 
 MockKeyable.prototype.setInterpolationTypeAtKey = function (index, inType, outType) {
@@ -171,12 +216,41 @@ MockAnimatorBag.prototype.addProperty = function (matchName) {
   return animator;
 };
 
+function MockTextDocument() {
+  this.text = "QuickKit";
+  this.font = "ArialMT";
+  this.fontSize = 48;
+  this.tracking = 0;
+  this.leading = 0;
+  this.baselineShift = 0;
+  this.horizontalScale = 100;
+  this.verticalScale = 100;
+  this.applyFill = true;
+  this.fillColor = [1, 1, 1];
+  this.applyStroke = false;
+  this.strokeColor = [0, 0, 0];
+  this.strokeWidth = 0;
+  this.fauxBold = false;
+  this.fauxItalic = false;
+  this.allCaps = false;
+  this.smallCaps = false;
+  this.strokeOverFill = false;
+  this.justification = 0;
+}
+
 function MockTextProperties() {
   this.animators = new MockAnimatorBag();
+  this.document = new MockKeyable({
+    value: new MockTextDocument(),
+    propertyValueType: 6,
+    matchName: "ADBE Text Document",
+    name: "Source Text"
+  });
 }
 
 MockTextProperties.prototype.property = function (key) {
   if (key === "ADBE Text Animators") return this.animators;
+  if (key === "ADBE Text Document") return this.document;
   return null;
 };
 
@@ -256,14 +330,18 @@ function MockLayer(opts) {
   this.locked = !!opts.locked;
   this.rect = opts.rect === null ? null : opts.rect || { left: 0, top: 0, width: 100, height: 50 };
   this.startTime = opts.startTime || 0;
-  this.inPoint = 0;
-  this.outPoint = opts.duration !== undefined ? opts.duration : 5;
+  this.inPoint = opts.inPoint !== undefined ? opts.inPoint : 0;
+  this.outPoint = opts.duration !== undefined ? opts.duration : (this.inPoint + 5);
   this.parent = null;
   this.numProperties = 0;
   this.groups = opts.groups || {};
   this.parentLookups = 0;
+  this.selectedProperties = opts.selectedProperties || [];
 
   if (opts.text) this.groups["ADBE Text Properties"] = new MockTextProperties();
+  if (!this.groups["ADBE Effect Parade"]) {
+    this.groups["ADBE Effect Parade"] = new MockEffectParade(opts.effects || []);
+  }
 
   this.transform = {
     anchor: (opts.anchor || [0, 0]).slice(),
@@ -274,6 +352,9 @@ function MockLayer(opts) {
   };
 
   this.anchorPoint = new MockKeyable({
+    propertyValueType: 2,
+    matchName: "ADBE Anchor Point",
+    name: "Anchor Point",
     get: function () {
       return self.transform.anchor.slice();
     },
@@ -283,6 +364,9 @@ function MockLayer(opts) {
   });
 
   this.position = new MockKeyable({
+    propertyValueType: 2,
+    matchName: "ADBE Position",
+    name: "Position",
     get: function () {
       return self.transform.position.slice();
     },
@@ -292,6 +376,9 @@ function MockLayer(opts) {
   });
 
   this.scale = new MockKeyable({
+    propertyValueType: 2,
+    matchName: "ADBE Scale",
+    name: "Scale",
     get: function () {
       return self.transform.scale.slice();
     },
@@ -301,6 +388,9 @@ function MockLayer(opts) {
   });
 
   this.opacity = new MockKeyable({
+    propertyValueType: 1,
+    matchName: "ADBE Opacity",
+    name: "Opacity",
     get: function () {
       return self.transform.opacity;
     },
@@ -308,7 +398,40 @@ function MockLayer(opts) {
       self.transform.opacity = value;
     }
   });
+
+  this.rotation = new MockKeyable({
+    propertyValueType: 1,
+    matchName: "ADBE Rotate Z",
+    name: "Rotation",
+    get: function () {
+      return self.transform.rotation;
+    },
+    set: function (value) {
+      self.transform.rotation = value;
+    }
+  });
+
+  if (!this.groups["ADBE Transform Group"]) {
+    this.groups["ADBE Transform Group"] = new MockTransformGroup(this);
+  }
 }
+
+function MockTransformGroup(layer) {
+  this.layer = layer;
+  this.children = [layer.anchorPoint, layer.position, layer.scale, layer.rotation, layer.opacity];
+  this.numProperties = this.children.length;
+  this.propertyType = 2;
+}
+
+MockTransformGroup.prototype.property = function (key) {
+  if (typeof key === "number") return this.children[key - 1] || null;
+  if (key === "ADBE Anchor Point") return this.layer.anchorPoint;
+  if (key === "ADBE Position") return this.layer.position;
+  if (key === "ADBE Scale") return this.layer.scale;
+  if (key === "ADBE Rotate Z") return this.layer.rotation;
+  if (key === "ADBE Opacity") return this.layer.opacity;
+  return null;
+};
 
 MockLayer.prototype.property = function (key) {
   if (typeof key === "number") return null;
@@ -351,6 +474,49 @@ MockLayer.prototype.compPointToSource = function (point) {
   ];
 };
 
+function MockEffect(name, matchName, params) {
+  this.name = name;
+  this.matchName = matchName;
+  this.propertyType = 2;
+  this.children = [];
+  for (var i = 0; i < (params || []).length; i++) {
+    this.children.push(
+      new MockKeyable({
+        value: params[i].value,
+        propertyValueType: params[i].type || 1,
+        matchName: params[i].match,
+        name: params[i].name
+      })
+    );
+  }
+  this.numProperties = this.children.length;
+}
+
+MockEffect.prototype.property = function (index) {
+  if (typeof index !== "number") return null;
+  return this.children[index - 1] || null;
+};
+
+function MockEffectParade(effects) {
+  this.children = effects || [];
+  this.numProperties = this.children.length;
+}
+
+MockEffectParade.prototype.property = function (index) {
+  if (typeof index !== "number") return null;
+  return this.children[index - 1] || null;
+};
+
+MockEffectParade.prototype.addProperty = function (matchName) {
+  if (matchName !== "ADBE Drop Shadow") return null;
+  var effect = new MockEffect("Drop Shadow", "ADBE Drop Shadow", [
+    { name: "Opacity", match: "ADBE Drop Shadow Opacity", value: 50, type: 1 }
+  ]);
+  this.children.push(effect);
+  this.numProperties = this.children.length;
+  return effect;
+};
+
 function MockComp() {
   this.frameRate = 25;
   this.duration = 10;
@@ -384,8 +550,130 @@ MockLayerCollection.prototype.precompose = function (indices, name, moveAllAttri
   return { name: name };
 };
 
+/* ---------------- mock ExtendScript file system ---------------- */
+
+function mockParentPath(path) {
+  var clean = String(path).replace(/\\/g, "/");
+  var cut = clean.lastIndexOf("/");
+  if (cut <= 0) return clean;
+  return clean.substring(0, cut);
+}
+
+function mockBaseName(path) {
+  var clean = String(path).replace(/\\/g, "/");
+  var cut = clean.lastIndexOf("/");
+  return cut >= 0 ? clean.substring(cut + 1) : clean;
+}
+
+function MockFileSystem() {
+  this.files = {};
+  this.folders = {};
+  this.folders["C:/Users/Test"] = true;
+  this.folders["C:/Users/Test/AppData"] = true;
+  this.folders["C:/Users/Test/AppData/Roaming"] = true;
+  this.folders["C:/Users/Test/Desktop"] = true;
+  this.dialogPath = "";
+  this.openPath = "";
+  this.cancelDialog = false;
+  this.readOnly = false;
+}
+
+function MockFile(fs, path) {
+  this.fs = fs;
+  this.fsName = String(path).replace(/\\/g, "/");
+  this.name = mockBaseName(this.fsName);
+  this.encoding = "UTF-8";
+}
+
+Object.defineProperty(MockFile.prototype, "exists", {
+  get: function () {
+    return Object.prototype.hasOwnProperty.call(this.fs.files, this.fsName);
+  }
+});
+
+Object.defineProperty(MockFile.prototype, "length", {
+  get: function () {
+    return this.exists ? this.fs.files[this.fsName].length : 0;
+  }
+});
+
+MockFile.prototype.open = function (mode) {
+  if (mode === "w") {
+    if (this.fs.readOnly) return false;
+    this.fs.folders[mockParentPath(this.fsName)] = true;
+    this.fs.files[this.fsName] = "";
+    return true;
+  }
+  if (mode === "r") return this.exists;
+  return false;
+};
+
+MockFile.prototype.read = function () {
+  return this.exists ? this.fs.files[this.fsName] : null;
+};
+
+MockFile.prototype.write = function (text) {
+  if (this.fs.readOnly) return false;
+  this.fs.files[this.fsName] = (this.fs.files[this.fsName] || "") + String(text);
+  return true;
+};
+
+MockFile.prototype.close = function () {};
+
+MockFile.prototype.remove = function () {
+  if (!this.exists) return true;
+  delete this.fs.files[this.fsName];
+  return true;
+};
+
+MockFile.prototype.rename = function (newName) {
+  var target = mockParentPath(this.fsName) + "/" + String(newName);
+  if (Object.prototype.hasOwnProperty.call(this.fs.files, target)) return false;
+  this.fs.files[target] = this.fs.files[this.fsName];
+  delete this.fs.files[this.fsName];
+  this.fsName = target;
+  this.name = String(newName);
+  return true;
+};
+
+function MockFolder(fs, path) {
+  this.fs = fs;
+  this.fsName = String(path).replace(/\\/g, "/").replace(/\/$/, "");
+  this.name = mockBaseName(this.fsName);
+}
+
+Object.defineProperty(MockFolder.prototype, "exists", {
+  get: function () {
+    return this.fs.folders[this.fsName] === true;
+  }
+});
+
+MockFolder.prototype.create = function () {
+  this.fs.folders[this.fsName] = true;
+  return true;
+};
+
+MockFolder.prototype.getFiles = function (mask) {
+  var out = [];
+  var suffix = String(mask || "").replace(/^\*/, "");
+  var self = this;
+  Object.keys(this.fs.files).forEach(function (path) {
+    if (mockParentPath(path) !== self.fsName) return;
+    if (suffix && path.substring(path.length - suffix.length) !== suffix) return;
+    out.push(new MockFile(self.fs, path));
+  });
+  return out;
+};
+
+Object.defineProperty(MockFolder.prototype, "parent", {
+  get: function () {
+    return new MockFolder(this.fs, mockParentPath(this.fsName));
+  }
+});
+
 function createWorld(comp) {
   var undo = { open: 0, close: 0, names: [] };
+  var fs = new MockFileSystem();
 
   var app = {
     version: "26.5",
@@ -400,9 +688,29 @@ function createWorld(comp) {
     }
   };
 
+  function FileCtor(path) {
+    return new MockFile(fs, path);
+  }
+  FileCtor.saveDialog = function () {
+    if (fs.cancelDialog || fs.dialogPath === "") return null;
+    return new MockFile(fs, fs.dialogPath);
+  };
+  FileCtor.openDialog = function () {
+    if (fs.cancelDialog || fs.openPath === "") return null;
+    return new MockFile(fs, fs.openPath);
+  };
+
+  function FolderCtor(path) {
+    return new MockFolder(fs, path);
+  }
+  FolderCtor.userData = new MockFolder(fs, "C:/Users/Test/AppData/Roaming");
+  FolderCtor.current = new MockFolder(fs, "C:/Users/Test/Desktop");
+
   var sandbox = {
     app: app,
     BridgeTalk: { appName: "aftereffects" },
+    File: FileCtor,
+    Folder: FolderCtor,
     KeyframeEase: function (speed, influence) {
       this.speed = speed;
       this.influence = influence;
@@ -417,7 +725,7 @@ function createWorld(comp) {
   vm.createContext(sandbox);
   vm.runInContext(SOURCE, sandbox, { filename: "quickkit.jsx" });
 
-  return { sandbox: sandbox, undo: undo, app: app };
+  return { sandbox: sandbox, undo: undo, app: app, fs: fs };
 }
 
 function expectPoint(rect, cell) {
@@ -1165,6 +1473,372 @@ test("host info still reports the adapter identity", function () {
   assert.strictEqual(info.host, "AEFT");
   assert.strictEqual(info.version, "26.5");
   assert.strictEqual(world.sandbox.qkPing(), "pong");
+});
+
+/* ---------------- presets ---------------- */
+
+var PRESET_ROOT = "C:/Users/Test/AppData/Roaming/QuickKit/presets";
+
+function listPresets(world) {
+  var result = JSON.parse(world.sandbox.qkPresetList());
+  assert.strictEqual(result.ok, true, result.error);
+  return result;
+}
+
+function presetByName(list, name) {
+  for (var i = 0; i < list.presets.length; i++) {
+    if (list.presets[i].name === name) return list.presets[i];
+  }
+  return null;
+}
+
+function presetStored(world, id) {
+  var path = PRESET_ROOT + "/" + id + ".qkpreset";
+  assert.ok(world.fs.files[path], "preset file exists: " + path);
+  return JSON.parse(world.fs.files[path]);
+}
+
+test("preset store seeds 15 original starters once", function () {
+  var world = createWorld(new MockComp());
+  var first = listPresets(world);
+
+  assert.strictEqual(first.presets.length, 15, "15 starters");
+  assert.strictEqual(first.seeded, 15, "reports the seed");
+  assert.deepStrictEqual(first.folders, ["Motion", "Styles", "Titles"]);
+  assert.ok(first.root.indexOf("QuickKit/presets") >= 0, first.root);
+
+  var files = Object.keys(world.fs.files).filter(function (name) {
+    return /\.qkpreset$/.test(name);
+  });
+  assert.strictEqual(files.length, 15, "15 files on disk");
+  assert.ok(world.fs.files[PRESET_ROOT + "/.seeded"], "seed marker written");
+
+  var second = listPresets(world);
+  assert.strictEqual(second.presets.length, 15, "no duplicate seed");
+  assert.strictEqual(second.seeded, 0);
+});
+
+test("deleting every preset leaves the empty state and does not reseed", function () {
+  var world = createWorld(new MockComp());
+  listPresets(world);
+  Object.keys(world.fs.files).forEach(function (path) {
+    if (/\.qkpreset$/.test(path)) delete world.fs.files[path];
+  });
+
+  var list = listPresets(world);
+  assert.strictEqual(list.presets.length, 0);
+  assert.strictEqual(list.seeded, 0);
+  assert.strictEqual(
+    Object.keys(world.fs.files).filter(function (path) { return /\.qkpreset$/.test(path); }).length,
+    0
+  );
+});
+
+test("save captures keyframes relative to the layer in point and apply rebases them", function () {
+  var source = new MockLayer({ name: "Source", inPoint: 1, opacity: 40 });
+  source.opacity.setValueAtTime(1, 0);
+  source.opacity.setValueAtTime(1.5, 40);
+  var sourceComp = new MockComp();
+  sourceComp.selectedLayers = [source];
+  var world = createWorld(sourceComp);
+
+  var saved = JSON.parse(world.sandbox.qkPresetSave("Source Fade", "Custom"));
+  assert.strictEqual(saved.ok, true, saved.error);
+
+  var list = listPresets(world);
+  assert.strictEqual(list.presets.length, 1);
+  var stored = presetStored(world, list.presets[0].id);
+  assert.strictEqual(stored.layers[0].props[4].keys[0].t, 0);
+  assert.strictEqual(stored.layers[0].props[4].keys[1].t, 0.5);
+
+  var target = new MockLayer({ name: "Target", inPoint: 3, opacity: 100 });
+  var targetComp = new MockComp();
+  targetComp.selectedLayers = [target];
+  world.sandbox.app.project.activeItem = targetComp;
+
+  var applied = JSON.parse(world.sandbox.qkPresetApply(list.presets[0].id));
+  assert.strictEqual(applied.ok, true, applied.error);
+  assert.strictEqual(target.opacity.keys.length, 2);
+  close(target.opacity.keys[0].time, 3, "first key follows the target in point");
+  close(target.opacity.keys[1].time, 3.5, "second key keeps its offset");
+  assert.strictEqual(target.opacity.keys[0].value, 0);
+  assert.strictEqual(target.opacity.keys[1].value, 40);
+  assert.strictEqual(world.undo.open, 1, "one undo group");
+  assert.strictEqual(world.undo.close, 1);
+});
+
+test("applying a text style preset keeps the target text and changes its style", function () {
+  var comp = new MockComp();
+  var layer = new MockLayer({ text: true, name: "Title" });
+  comp.selectedLayers = [layer];
+  var world = createWorld(comp);
+
+  var list = listPresets(world);
+  var starter = presetByName(list, "Clean Lower Third");
+  assert.ok(starter, "starter exists");
+
+  var doc = layer.groups["ADBE Text Properties"].document.value;
+  doc.text = "Hello world";
+  doc.fontSize = 20;
+  doc.fillColor = [0, 0, 0];
+
+  var result = JSON.parse(world.sandbox.qkPresetApply(starter.id));
+  assert.strictEqual(result.ok, true, result.error);
+  assert.strictEqual(doc.text, "Hello world", "text content preserved");
+  assert.strictEqual(doc.fontSize, 48);
+  assert.strictEqual(JSON.stringify(doc.fillColor), JSON.stringify([1, 1, 1]));
+  assert.strictEqual(world.undo.close, 1);
+});
+
+test("a text style preset reports a non-text layer instead of crashing", function () {
+  var comp = new MockComp();
+  comp.selectedLayers = [new MockLayer({ name: "Solid" })];
+  var world = createWorld(comp);
+  var list = listPresets(world);
+  var starter = presetByName(list, "Clean Lower Third");
+
+  var result = JSON.parse(world.sandbox.qkPresetApply(starter.id));
+  assert.strictEqual(result.ok, false);
+  assert.ok(/Nothing was applied/.test(result.error), result.error);
+  assert.strictEqual(world.undo.close, 1, "undo closed even when nothing changed");
+});
+
+test("a position preset applies as an offset from the target layer", function () {
+  var target = new MockLayer({ name: "Target", inPoint: 2, position: [500, 300] });
+  var comp = new MockComp();
+  comp.selectedLayers = [target];
+  var world = createWorld(comp);
+  var starter = presetByName(listPresets(world), "Title Rise");
+
+  var result = JSON.parse(world.sandbox.qkPresetApply(starter.id));
+  assert.strictEqual(result.ok, true, result.error);
+  assert.strictEqual(target.position.keys.length, 2);
+  close(target.position.keys[0].time, 2, "in point");
+  assert.strictEqual(JSON.stringify(target.position.keys[0].value), JSON.stringify([500, 360]));
+  assert.strictEqual(JSON.stringify(target.position.keys[1].value), JSON.stringify([500, 300]));
+});
+
+test("selected properties are captured alone and leave other properties alone", function () {
+  var source = new MockLayer({ name: "Source", opacity: 40, position: [900, 500] });
+  source.selectedProperties = [source.opacity];
+  var sourceComp = new MockComp();
+  sourceComp.selectedLayers = [source];
+  var world = createWorld(sourceComp);
+
+  var saved = JSON.parse(world.sandbox.qkPresetSave("Opacity only", ""));
+  assert.strictEqual(saved.ok, true, saved.error);
+  var list = listPresets(world);
+  var stored = presetStored(world, list.presets[0].id);
+  assert.strictEqual(stored.layers[0].props.length, 1);
+  assert.strictEqual(stored.layers[0].props[0].match, "ADBE Opacity");
+
+  var target = new MockLayer({ name: "Target", opacity: 100, position: [10, 10] });
+  var targetComp = new MockComp();
+  targetComp.selectedLayers = [target];
+  world.sandbox.app.project.activeItem = targetComp;
+  var applied = JSON.parse(world.sandbox.qkPresetApply(list.presets[0].id));
+  assert.strictEqual(applied.ok, true, applied.error);
+  assert.strictEqual(target.opacity.value, 40);
+  assert.deepStrictEqual(target.position.value, [10, 10], "position untouched");
+});
+
+test("presets rename, favourite, move between folders and delete", function () {
+  var world = createWorld(new MockComp());
+  var list = listPresets(world);
+  var id = list.presets[0].id;
+
+  assert.strictEqual(JSON.parse(world.sandbox.qkPresetRename(id, "Renamed look")).ok, true);
+  assert.strictEqual(JSON.parse(world.sandbox.qkPresetFavorite(id, "1")).ok, true);
+  assert.strictEqual(JSON.parse(world.sandbox.qkFolderCreate("Custom")).ok, true);
+  assert.strictEqual(JSON.parse(world.sandbox.qkPresetMove(id, "Custom")).ok, true);
+
+  var renamed = presetByName(listPresets(world), "Renamed look");
+  assert.ok(renamed);
+  assert.strictEqual(renamed.favorite, true);
+  assert.strictEqual(renamed.folder, "Custom");
+
+  assert.strictEqual(JSON.parse(world.sandbox.qkFolderDelete("Custom")).ok, true);
+  assert.strictEqual(presetByName(listPresets(world), "Renamed look").folder, "");
+
+  assert.strictEqual(JSON.parse(world.sandbox.qkPresetDelete(id)).ok, true);
+  assert.strictEqual(listPresets(world).presets.length, 14);
+});
+
+test("reorder is persisted and reflected by the next list", function () {
+  var world = createWorld(new MockComp());
+  var first = listPresets(world);
+  var ids = first.presets.map(function (preset) { return preset.id; }).reverse();
+
+  var result = JSON.parse(world.sandbox.qkPresetReorder(JSON.stringify(ids)));
+  assert.strictEqual(result.ok, true, result.error);
+  var second = listPresets(world);
+  assert.strictEqual(second.presets[0].id, ids[0]);
+  assert.strictEqual(second.presets[14].id, ids[14]);
+});
+
+test("export writes one pack and import merges it with fresh ids", function () {
+  var world = createWorld(new MockComp());
+  listPresets(world);
+  world.fs.dialogPath = "C:/Users/Test/Desktop/MyPack";
+
+  var exported = JSON.parse(world.sandbox.qkPresetExport(""));
+  assert.strictEqual(exported.ok, true, exported.error);
+  assert.ok(world.fs.files["C:/Users/Test/Desktop/MyPack.qkpack"], "pack written");
+  var pack = JSON.parse(world.fs.files["C:/Users/Test/Desktop/MyPack.qkpack"]);
+  assert.strictEqual(pack.presets.length, 15);
+
+  world.fs.openPath = "C:/Users/Test/Desktop/MyPack.qkpack";
+  var imported = JSON.parse(world.sandbox.qkPresetImport());
+  assert.strictEqual(imported.ok, true, imported.error);
+  var after = listPresets(world);
+  assert.strictEqual(after.presets.length, 30);
+  assert.ok(presetByName(after, "Clean Lower Third 2"), "duplicate names are suffixed");
+});
+
+test("a corrupt preset and a corrupt folder file are skipped without crashing", function () {
+  var world = createWorld(new MockComp());
+  listPresets(world);
+  world.fs.files[PRESET_ROOT + "/broken.qkpreset"] = "{not json";
+  world.fs.files[PRESET_ROOT + "/folders.json"] = "[]";
+
+  var list = listPresets(world);
+  assert.strictEqual(list.presets.length, 15);
+  assert.ok(list.skipped.indexOf("broken.qkpreset") >= 0, list.skipped.join(","));
+  assert.ok(/damaged/i.test(list.note), list.note);
+});
+
+test("a corrupt pack is rejected with a readable message", function () {
+  var world = createWorld(new MockComp());
+  listPresets(world);
+  world.fs.files["C:/Users/Test/Desktop/bad.qkpack"] = "not a pack";
+  world.fs.openPath = "C:/Users/Test/Desktop/bad.qkpack";
+
+  var result = JSON.parse(world.sandbox.qkPresetImport());
+  assert.strictEqual(result.ok, false);
+  assert.ok(/not a QuickKit preset pack/.test(result.error), result.error);
+  assert.strictEqual(listPresets(world).presets.length, 15);
+});
+
+test("saving with no selection and writing to a read-only store fail cleanly", function () {
+  var empty = new MockComp();
+  var world = createWorld(empty);
+  var noSelection = JSON.parse(world.sandbox.qkPresetSave("Empty", ""));
+  assert.strictEqual(noSelection.ok, false);
+  assert.ok(/Nothing selected/.test(noSelection.error), noSelection.error);
+
+  var layer = new MockLayer();
+  empty.selectedLayers = [layer];
+  world.fs.readOnly = true;
+  var readOnly = JSON.parse(world.sandbox.qkPresetSave("Blocked", ""));
+  assert.strictEqual(readOnly.ok, false);
+  assert.ok(/could not write/i.test(readOnly.error), readOnly.error);
+});
+
+test("effect parameters are captured by match name and added to a target layer", function () {
+  var source = new MockLayer({
+    name: "Source",
+    effects: [new MockEffect("Drop Shadow", "ADBE Drop Shadow", [
+      { name: "Opacity", match: "ADBE Drop Shadow Opacity", value: 25, type: 1 }
+    ])]
+  });
+  var sourceComp = new MockComp();
+  sourceComp.selectedLayers = [source];
+  var world = createWorld(sourceComp);
+
+  var saved = JSON.parse(world.sandbox.qkPresetSave("Shadow", ""));
+  assert.strictEqual(saved.ok, true, saved.error);
+  var preset = listPresets(world).presets[0];
+  var stored = presetStored(world, preset.id);
+  var effectProp = null;
+  for (var i = 0; i < stored.layers[0].props.length; i++) {
+    if (stored.layers[0].props[i].scope === "effect") effectProp = stored.layers[0].props[i];
+  }
+  assert.ok(effectProp, "effect parameter captured");
+  assert.strictEqual(effectProp.effectMatch, "ADBE Drop Shadow");
+
+  var target = new MockLayer({ name: "Target" });
+  var targetComp = new MockComp();
+  targetComp.selectedLayers = [target];
+  world.sandbox.app.project.activeItem = targetComp;
+  var applied = JSON.parse(world.sandbox.qkPresetApply(preset.id));
+  assert.strictEqual(applied.ok, true, applied.error);
+
+  var parade = target.property("ADBE Effect Parade");
+  assert.ok(parade, "effect was added");
+  assert.strictEqual(parade.property(1).matchName, "ADBE Drop Shadow");
+  assert.strictEqual(parade.property(1).property(1).value, 25);
+});
+
+test("a static preset clears target keyframes and sets the captured value", function () {
+  var source = new MockLayer({ name: "Source", opacity: 40 });
+  var sourceComp = new MockComp();
+  sourceComp.selectedLayers = [source];
+  var world = createWorld(sourceComp);
+  var saved = JSON.parse(world.sandbox.qkPresetSave("Static opacity", ""));
+  assert.strictEqual(saved.ok, true, saved.error);
+  var preset = listPresets(world).presets[0];
+
+  var target = new MockLayer({ name: "Target", opacity: 100 });
+  target.opacity.setValueAtTime(0, 100);
+  target.opacity.setValueAtTime(1, 0);
+  var targetComp = new MockComp();
+  targetComp.selectedLayers = [target];
+  world.sandbox.app.project.activeItem = targetComp;
+
+  var applied = JSON.parse(world.sandbox.qkPresetApply(preset.id));
+  assert.strictEqual(applied.ok, true, applied.error);
+  assert.strictEqual(target.opacity.keys.length, 0, "old keys replaced");
+  assert.strictEqual(target.opacity.value, 40);
+});
+
+test("one saved layer applies to every selected layer in one undo group", function () {
+  var comp = new MockComp();
+  var first = new MockLayer({ name: "One" });
+  var second = new MockLayer({ name: "Two" });
+  comp.selectedLayers = [first, second];
+  var world = createWorld(comp);
+  var starter = presetByName(listPresets(world), "Fade In");
+
+  var applied = JSON.parse(world.sandbox.qkPresetApply(starter.id));
+  assert.strictEqual(applied.ok, true, applied.error);
+  assert.strictEqual(first.opacity.keys.length, 2);
+  assert.strictEqual(second.opacity.keys.length, 2);
+  assert.strictEqual(world.undo.open, 1);
+  assert.strictEqual(world.undo.close, 1);
+});
+
+test("a locked target is skipped with a readable message", function () {
+  var comp = new MockComp();
+  var locked = new MockLayer({ name: "Locked", locked: true });
+  comp.selectedLayers = [locked];
+  var world = createWorld(comp);
+  var starter = presetByName(listPresets(world), "Fade In");
+
+  var applied = JSON.parse(world.sandbox.qkPresetApply(starter.id));
+  assert.strictEqual(applied.ok, false);
+  assert.ok(/Locked is locked/.test(applied.error), applied.error);
+  assert.strictEqual(locked.opacity.keys.length, 0);
+  assert.strictEqual(world.undo.close, 1);
+});
+
+test("a multi-layer preset maps onto selected layers in order", function () {
+  var first = new MockLayer({ name: "One", opacity: 10 });
+  var second = new MockLayer({ name: "Two", opacity: 20 });
+  var sourceComp = new MockComp();
+  sourceComp.selectedLayers = [first, second];
+  var world = createWorld(sourceComp);
+  var saved = JSON.parse(world.sandbox.qkPresetSave("Pair", ""));
+  assert.strictEqual(saved.ok, true, saved.error);
+  var preset = listPresets(world).presets[0];
+
+  var target = new MockLayer({ name: "Target", opacity: 100 });
+  var targetComp = new MockComp();
+  targetComp.selectedLayers = [target];
+  world.sandbox.app.project.activeItem = targetComp;
+  var applied = JSON.parse(world.sandbox.qkPresetApply(preset.id));
+  assert.strictEqual(applied.ok, true, applied.error);
+  assert.strictEqual(target.opacity.value, 10, "first saved layer wins");
+  assert.ok(/only 1 of 2/.test(applied.message), applied.message);
 });
 
 /* ---------------- report ---------------- */

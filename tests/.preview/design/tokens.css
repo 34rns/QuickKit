@@ -1,0 +1,182 @@
+/* QuickKit design tokens — single source of truth.
+   Every color, size, radius, shadow, font and duration in the panel comes from
+   this file. Nothing else may hard-code a visual value. */
+
+@font-face {
+  font-family: "Inter";
+  src: url("./fonts/inter-latin-400-normal.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("./fonts/inter-latin-500-normal.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("./fonts/inter-latin-600-normal.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: block;
+}
+
+:root {
+  /* Surfaces */
+  --qk-bg: #0e0f12;
+  --qk-surface: #16181d;
+  --qk-surface-raised: #1b1e24;
+  --qk-border: #23262d;
+  --qk-border-strong: #2f333c;
+
+  /* Text */
+  --qk-text: #e6e8ec;
+  --qk-muted: #8b90a0;
+
+  /* Single accent — primary actions and active states only */
+  --qk-accent: #7c5cff;
+  --qk-accent-hover: #8f73ff;
+  --qk-accent-pressed: #6a4ae6;
+  --qk-accent-soft: rgba(124, 92, 255, 0.14);
+  --qk-accent-ring: rgba(124, 92, 255, 0.45);
+  --qk-accent-contrast: #ffffff;
+
+  /* Overlays and effects */
+  --qk-backdrop: rgba(6, 7, 9, 0.74);
+  --qk-spinner-track: rgba(255, 255, 255, 0.28);
+  --qk-hairline: rgba(255, 255, 255, 0.04);
+
+  /* Typography */
+  --qk-font-ui: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --qk-font-mono: "Cascadia Mono", "Consolas", "Courier New", monospace;
+
+  --qk-fs-11: 11px;
+  --qk-fs-12: 12px;
+  --qk-fs-13: 13px;
+  --qk-fs-16: 16px;
+  --qk-fs-20: 20px;
+
+  --qk-fw-regular: 400;
+  --qk-fw-medium: 500;
+  --qk-fw-semibold: 600;
+
+  --qk-lh-tight: 1.25;
+  --qk-lh-base: 1.45;
+
+  --qk-tracking-caps: 0.05em;
+
+  /* Spacing — 8px rhythm, 4px half-step for inline gaps */
+  --qk-space-1: 4px;
+  --qk-space-2: 8px;
+  --qk-space-3: 12px;
+  --qk-space-4: 16px;
+  --qk-space-6: 24px;
+  --qk-space-8: 32px;
+
+  /* Shape */
+  --qk-radius-sm: 6px;
+  --qk-radius-md: 8px;
+  --qk-radius-pill: 999px;
+  --qk-border-width: 1px;
+
+  --qk-shadow-float: 0 10px 28px rgba(0, 0, 0, 0.46), 0 1px 0 var(--qk-hairline);
+  --qk-shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.28);
+  --qk-focus-ring: 0 0 0 2px var(--qk-accent-ring);
+
+  /* Motion */
+  --qk-dur-fast: 120ms;
+  --qk-dur-base: 160ms;
+  --qk-dur-slow: 180ms;
+  --qk-ease-out: cubic-bezier(0.2, 0.7, 0.3, 1);
+
+  /* Layout */
+  --qk-header-h: 44px;
+  --qk-content-max: 320px;
+  --qk-dialog-max: 340px;
+  --qk-tooltip-max: 220px;
+  --qk-tab-indicator-w: 2px;
+  --qk-status-h: 28px;
+  --qk-tab-h: 40px;
+  --qk-control-h: 28px;
+  --qk-control-h-sm: 24px;
+  --qk-icon-sm: 14px;
+  --qk-icon-md: 16px;
+  --qk-icon-lg: 24px;
+  --qk-icon-xl: 28px;
+  --qk-panel-min: 240px;
+
+  /* Component: buttons */
+  --qk-btn-primary-bg: var(--qk-accent);
+  --qk-btn-primary-bg-hover: var(--qk-accent-hover);
+  --qk-btn-primary-bg-pressed: var(--qk-accent-pressed);
+  --qk-btn-primary-fg: var(--qk-accent-contrast);
+  --qk-btn-secondary-bg: var(--qk-surface-raised);
+  --qk-btn-secondary-bg-hover: var(--qk-border);
+  --qk-btn-secondary-bg-pressed: var(--qk-border-strong);
+  --qk-btn-secondary-border: var(--qk-border-strong);
+  --qk-btn-ghost-fg: var(--qk-muted);
+  --qk-btn-ghost-fg-hover: var(--qk-text);
+  --qk-btn-disabled-opacity: 0.45;
+
+  /* Component: tabs */
+  --qk-tab-indicator-h: var(--qk-tab-indicator-w);
+  --qk-tab-fg: var(--qk-muted);
+  --qk-tab-fg-active: var(--qk-text);
+  --qk-tab-indicator: var(--qk-accent);
+  --qk-tab-other-opacity: 0.5;
+
+  /* Component: status bar */
+  --qk-status-bg: var(--qk-surface);
+  --qk-status-fg: var(--qk-muted);
+
+  /* Component: fields */
+  --qk-input-bg: var(--qk-bg);
+  --qk-input-border: var(--qk-border);
+  --qk-input-fg: var(--qk-text);
+  --qk-input-placeholder: var(--qk-muted);
+
+  /* Component: anchor grid */
+  --qk-anchor-cell: 64px;
+  --qk-anchor-dot: 7px;
+  --qk-anchor-gap: var(--qk-space-1);
+
+  /* Component: easing curve */
+  --qk-curve-height: 110px;
+  --qk-curve-axis: var(--qk-border-strong);
+  --qk-curve-stroke: var(--qk-accent);
+
+  /* Presets */
+  --qk-preset-card-min: 200px;
+  --qk-preset-color: var(--qk-accent);
+  --qk-preset-thumb-w: 56px;
+  --qk-preset-thumb-h: 40px;
+  --qk-preset-menu-w: 152px;
+  --qk-curve-width: 2px;
+
+  /* Component: messages */
+  --qk-msg-bg: var(--qk-surface);
+  --qk-msg-border: var(--qk-border-strong);
+  --qk-msg-error-border: var(--qk-muted);
+
+  /* Component: chevron */
+  --qk-chevron: 6px;
+
+  /* Component: text preview */
+  --qk-text-stage-height: 92px;
+  --qk-text-sample-size: 24px;
+  --qk-text-shift: 14px;
+  --qk-text-blur: 6px;
+  --qk-text-pop: 0.82;
+
+  /* Tool panels */
+  --qk-panel-max: 480px;
+
+  /* Layers */
+  --qk-z-tooltip: 40;
+  --qk-z-overlay: 30;
+}

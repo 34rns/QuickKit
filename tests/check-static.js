@@ -202,17 +202,95 @@ if (Object.keys(ids).every(function (id) { return html.indexOf('id="' + id + '"'
   }
 });
 
-/* ExtendScript: check syntax through node by copying to a .js temp file */
+/* ExtendScript: Node can parse the file, but it is NOT an ES3 parser. The
+   reserved-word scan below is the check that catches what After Effects
+   rejects (for example `short:` at line 1503). */
+function es3ReservedHits(source) {
+  var reserved = {};
+  "abstract boolean byte char class const debugger double enum export extends final float goto implements import int interface long native package private protected public short static super synchronized throws transient volatile let yield".split(" ").forEach(function (word) {
+    reserved[word] = true;
+  });
+  var hits = [];
+  var i = 0;
+  var line = 1;
+  var length = source.length;
+  var backslash = String.fromCharCode(92);
+
+  while (i < length) {
+    var c = source.charAt(i);
+    var next = source.charAt(i + 1);
+
+    if (c === "/" && next === "/") {
+      while (i < length && source.charAt(i) !== "\n") i++;
+      continue;
+    }
+    if (c === "/" && next === "*") {
+      i += 2;
+      while (i < length && !(source.charAt(i) === "*" && source.charAt(i + 1) === "/")) {
+        if (source.charAt(i) === "\n") line++;
+        i++;
+      }
+      i += 2;
+      continue;
+    }
+    if (c === "\"" || c === "'") {
+      var quote = c;
+      i++;
+      while (i < length) {
+        if (source.charAt(i) === backslash) {
+          i += 2;
+          continue;
+        }
+        if (source.charAt(i) === quote) {
+          i++;
+          break;
+        }
+        if (source.charAt(i) === "\n") line++;
+        i++;
+      }
+      continue;
+    }
+    if (/[A-Za-z_$]/.test(c)) {
+      var start = i + 1;
+      while (start < length && /[A-Za-z0-9_$]/.test(source.charAt(start))) start++;
+      var word = source.substring(i, start);
+      if (Object.prototype.hasOwnProperty.call(reserved, word)) hits.push({ line: line, word: word });
+      i = start;
+      continue;
+    }
+    if (c === "\n") line++;
+    i++;
+  }
+  return hits;
+}
+
 if (exists("host/quickkit.jsx")) {
   var tmp = path.join(os.tmpdir(), "quickkit-host-syntax-" + process.pid + ".js");
   fs.writeFileSync(tmp, read("host/quickkit.jsx"), "utf8");
   try {
     execFileSync(process.execPath, ["--check", tmp], { stdio: "pipe" });
-    pass("syntax ok: host/quickkit.jsx (parsed as ES3-compatible JS)");
+    pass("syntax ok: host/quickkit.jsx (Node parser)");
   } catch (error) {
     fail("syntax error in host/quickkit.jsx: " + String(error.stderr || error.message));
   } finally {
     try { fs.unlinkSync(tmp); } catch (e) {}
+  }
+
+  var probe = es3ReservedHits("var x = { short: 1 }; // short\nvar s = 'class';") ;
+  if (probe.length !== 1 || probe[0].word !== "short") {
+    fail("ES3 guard self-test failed: it must see code but ignore strings and comments");
+  } else {
+    pass("ES3 guard self-test sees code but ignores strings and comments");
+  }
+
+  var es3Hits = es3ReservedHits(read("host/quickkit.jsx"));
+  if (es3Hits.length) {
+    fail(
+      "host/quickkit.jsx uses ExtendScript reserved word(s): " +
+      es3Hits.map(function (hit) { return hit.word + " at line " + hit.line; }).join(", ")
+    );
+  } else {
+    pass("host/quickkit.jsx uses no ExtendScript reserved words");
   }
 }
 

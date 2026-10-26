@@ -149,6 +149,13 @@
   --qk-curve-height: 110px;
   --qk-curve-axis: var(--qk-border-strong);
   --qk-curve-stroke: var(--qk-accent);
+
+  /* Presets */
+  --qk-preset-card-min: 200px;
+  --qk-preset-color: var(--qk-accent);
+  --qk-preset-thumb-w: 56px;
+  --qk-preset-thumb-h: 40px;
+  --qk-preset-menu-w: 152px;
   --qk-curve-width: 2px;
 
   /* Component: messages */

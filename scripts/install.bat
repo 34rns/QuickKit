@@ -29,18 +29,16 @@ if not errorlevel 1 call :set_debug 13
 
 echo.
 echo  [2/4] Removing the previous copy (if any)...
-if exist "%DEST%" rmdir /s /q "%DEST%"
+if exist "%DEST%" rmdir /s /q "%DEST%" >nul 2>&1
 if exist "%DEST%" (
   ping -n 3 127.0.0.1 >nul
-  rmdir /s /q "%DEST%"
+  rmdir /s /q "%DEST%" >nul 2>&1
 )
 if exist "%DEST%" (
-  echo   [FAIL] Could not remove:
-  echo          %DEST%
-  echo          Something is still using that folder. Close After Effects and
-  echo          Premiere Pro, close any Explorer window showing it, then run
-  echo          install.bat again.
-  goto :failed
+  echo   [WARN] The old folder itself is locked by another process.
+  echo          Clearing its contents and overwriting in place instead.
+  del /f /q "%DEST%\*" >nul 2>&1
+  for /d %%D in ("%DEST%\*") do rmdir /s /q "%%D" >nul 2>&1
 )
 
 echo  [3/4] Copying the panel, design tokens and host script...
@@ -62,6 +60,12 @@ if not exist "%DEST%\design\tokens.css" set "MISSING=1"
 if not exist "%DEST%\design\fonts\inter-latin-400-normal.woff2" set "MISSING=1"
 if not exist "%DEST%\design\icons\icons.js" set "MISSING=1"
 if not exist "%DEST%\host\quickkit.jsx" set "MISSING=1"
+fc /b "%ROOT%\host\quickkit.jsx" "%DEST%\host\quickkit.jsx" >nul 2>&1
+if errorlevel 1 set "MISSING=1"
+fc /b "%ROOT%\extension\js\panel.js" "%DEST%\js\panel.js" >nul 2>&1
+if errorlevel 1 set "MISSING=1"
+fc /b "%ROOT%\extension\index.html" "%DEST%\index.html" >nul 2>&1
+if errorlevel 1 set "MISSING=1"
 if "%MISSING%"=="1" goto :copy_failed
 
 echo.
