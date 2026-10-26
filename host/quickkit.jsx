@@ -4042,3 +4042,983 @@ function qkStarterPresets() {
 
   return list;
 }
+
+/* ============================================================
+ * Silence cutter (Premiere Pro)
+ * ------------------------------------------------------------
+ * Premiere half of Part 5. The panel runs ffmpeg and sends back the silent
+ * ranges of each media file; this side maps them onto the sequence timeline,
+ * keeps only the ranges that are silent on *every* audio track, and applies
+ * the edit the user picked.
+ *
+ * Premiere only: qkSilenceTargets() fails cleanly in After Effects.
+ * ============================================================ */
+
+var QK_SILENCE_EPS = 0.02;
+
+function qkSilenceNumber(value, fallback) {
+  var parsed = Number(value);
+  if (!isFinite(parsed)) return fallback;
+  return parsed;
+}
+
+function qkSilenceSequence() {
+  var seq = null;
+  try {
+    seq = app.project ? app.project.activeSequence : null;
+  } catch (eProject) {}
+
+  if (!seq) {
+    return {
+      error:
+        "No open sequence. Open the sequence you want to clean up in Premiere Pro, then scan again."
+    };
+  }
+
+  var real = false;
+  try {
+    real = typeof seq.audioTracks !== "undefined" && typeof seq.name !== "undefined";
+  } catch (eCheck) {}
+
+  if (!real) {
+    return { error: "The active item is not a Premiere Pro sequence. The Silence tool is Premiere only." };
+  }
+
+  return { seq: seq };
+}
+
+function qkSilenceClipPath(item) {
+  var projectItem = null;
+  var path = "";
+
+  try {
+    projectItem = item.projectItem;
+  } catch (eItem) {}
+
+  if (!projectItem) return "";
+
+  try {
+    path = qkStr(projectItem.getMediaPath());
+  } catch (ePath) {
+    path = "";
+  }
+  if (path === "") {
+    try {
+      path = qkStr(projectItem.filePath);
+    } catch (eFile) {
+      path = "";
+    }
+  }
+  return path;
+}
+
+/* Sequence frame rate from the tick timebase (254016000000 ticks per second). */
+function qkSilenceFrameRate(seq) {
+  var timebase = 0;
+  try {
+    timebase = qkSilenceNumber(seq.timebase, 0);
+  } catch (eTb) {}
+  if (timebase <= 0) return 0;
+  var rate = 254016000000 / timebase;
+  return Math.round(rate * 1000) / 1000;
+}
+
+/* Every audio clip of the sequence as plain data, so the mapping code never
+   touches the app again. */
+function qkSilenceReadClips(seq) {
+  var clips = [];
+  var skipped = 0;
+  var tracks = null;
+  var trackCount = 0;
+  var t;
+  var i;
+  var track;
+  var count;
+  var item;
+  var path;
+  var entry;
+
+  try {
+    tracks = seq.audioTracks;
+    trackCount = tracks.numTracks;
+  } catch (eTracks) {
+    trackCount = 0;
+  }
+
+  for (t = 0; t < trackCount; t++) {
+    track = null;
+    try {
+      track = tracks[t];
+    } catch (eTrack) {}
+    if (!track) continue;
+
+    var trackName = "A" + (t + 1);
+    try {
+      if (track.name) trackName = qkStr(track.name);
+    } catch (eName) {}
+
+    try {
+      count = track.clips.numItems;
+    } catch (eCount) {
+      count = 0;
+    }
+
+    for (i = 0; i < count; i++) {
+      item = null;
+      try {
+        item = track.clips[i];
+      } catch (eClip) {}
+      if (!item) continue;
+
+      path = qkSilenceClipPath(item);
+      if (path === "" || path === "1") {
+        skipped++;
+        continue;
+      }
+
+      entry = {
+        id: "t" + t + "i" + i,
+        track: t,
+        trackName: trackName,
+        index: i,
+        name: qkStr(item.name),
+        path: path,
+        start: qkSilenceNumber(item.start, 0),
+        end: qkSilenceNumber(item.end, 0),
+        inPoint: qkSilenceNumber(item.inPoint, 0),
+        speed: 1
+      };
+
+      var speed = qkSilenceNumber(item.speed, 1);
+      if (speed > 0) entry.speed = speed;
+
+      if (entry.end <= entry.start) {
+        skipped++;
+        continue;
+      }
+
+      clips.push(entry);
+    }
+  }
+
+  return { clips: clips, skipped: skipped, trackCount: trackCount };
+}
+
+/* nodeIds of the clips the user has selected, so "selected clip" can mean just
+   that. Returns [] when the app does not answer. */
+function qkSilenceSelectedNodeIds(seq) {
+  var ids = [];
+  var selection = null;
+  var i;
+  var entry;
+  var nodeId;
+
+  try {
+    if (typeof seq.getSelection !== "function") return ids;
+    selection = seq.getSelection();
+  } catch (eSel) {
+    return ids;
+  }
+  if (!selection || typeof selection.length === "undefined") return ids;
+
+  for (i = 0; i < selection.length; i++) {
+    entry = selection[i];
+    if (!entry) continue;
+    nodeId = "";
+    try {
+      nodeId = qkStr(entry.nodeId);
+    } catch (eNode) {
+      nodeId = "";
+    }
+    if (nodeId !== "") ids.push(nodeId);
+  }
+  return ids;
+}
+
+function qkSilenceTargets(scope) {
+  var ctx = qkSilenceSequence();
+  if (ctx.error) return qkErr(ctx.error);
+
+  var seq = ctx.seq;
+  var read = qkSilenceReadClips(seq);
+  var clips = read.clips;
+  var notes = [];
+
+  if (!clips.length) {
+    return qkErr(
+      "This sequence has no audio clips QuickKit can read. Add audio, or check that the clips are not offline."
+    );
+  }
+
+  var wanted = qkStr(scope) === "selection";
+  if (wanted) {
+    var ids = qkSilenceSelectedNodeIds(seq);
+    if (!ids.length) {
+      notes.push("Nothing was selected, so the whole sequence was scanned.");
+      wanted = false;
+    } else {
+      var chosen = [];
+      var k;
+      var track;
+      var trackClips;
+      var hit;
+      for (k = 0; k < clips.length; k++) {
+        hit = false;
+        try {
+          track = seq.audioTracks[clips[k].track];
+          trackClips = track.clips;
+          var item = trackClips[clips[k].index];
+          hit = qkInList(qkStr(item.nodeId), ids);
+        } catch (eSel) {
+          hit = false;
+        }
+        if (hit) chosen.push(clips[k]);
+      }
+      if (chosen.length) {
+        clips = chosen;
+      } else {
+        notes.push("The selected clips have no readable audio, so the whole sequence was scanned.");
+      }
+    }
+  }
+
+  if (read.skipped > 0) {
+    notes.push(
+      qkPlural(read.skipped, "clip has", "clips have") + " no readable media path and " +
+      (read.skipped === 1 ? "was" : "were") + " skipped."
+    );
+  }
+
+  var payload = {
+    ok: true,
+    scope: wanted ? "selection" : "sequence",
+    message: "Found " + qkPlural(clips.length, "audio clip", "audio clips") + " on " + qkPlural(read.trackCount, "audio track", "audio tracks") + ".",
+    sequence: {
+      name: qkStr(seq.name),
+      start: 0,
+      end: 0,
+      frameRate: qkSilenceFrameRate(seq),
+      audioTracks: read.trackCount
+    },
+    clips: clips,
+    notes: notes
+  };
+
+  var longest = 0;
+  for (var c = 0; c < clips.length; c++) {
+    if (clips[c].end > longest) longest = clips[c].end;
+  }
+  payload.sequence.end = longest;
+
+  return qkJsonStringify(payload);
+}
+
+/* ---------- interval maths (plain data, mock-tested) ---------- */
+
+function qkSilenceMergeIntervals(list) {
+  var sorted = [];
+  var out = [];
+  var i;
+  var last;
+
+  for (i = 0; i < list.length; i++) {
+    if (list[i] && list[i].end > list[i].start) {
+      sorted.push({ start: list[i].start, end: list[i].end });
+    }
+  }
+
+  sorted.sort(function (a, b) {
+    return a.start - b.start;
+  });
+
+  for (i = 0; i < sorted.length; i++) {
+    if (!out.length) {
+      out.push({ start: sorted[i].start, end: sorted[i].end });
+      continue;
+    }
+    last = out[out.length - 1];
+    if (sorted[i].start <= last.end + 0.0005) {
+      if (sorted[i].end > last.end) last.end = sorted[i].end;
+    } else {
+      out.push({ start: sorted[i].start, end: sorted[i].end });
+    }
+  }
+
+  return out;
+}
+
+function qkSilenceSubtractIntervals(base, cuts) {
+  var out = [];
+  var mergedBase = qkSilenceMergeIntervals(base);
+  var mergedCuts = qkSilenceMergeIntervals(cuts);
+  var i;
+  var k;
+  var start;
+  var end;
+  var cut;
+
+  for (i = 0; i < mergedBase.length; i++) {
+    start = mergedBase[i].start;
+    end = mergedBase[i].end;
+
+    for (k = 0; k < mergedCuts.length; k++) {
+      cut = mergedCuts[k];
+      if (cut.end <= start) continue;
+      if (cut.start >= end) break;
+      if (cut.start > start) out.push({ start: start, end: cut.start });
+      start = cut.end;
+      if (start >= end) break;
+    }
+
+    if (start < end) out.push({ start: start, end: end });
+  }
+
+  return out;
+}
+
+function qkSilenceRound(value) {
+  return Math.round(value * 1000) / 1000;
+}
+
+/* Panel payload: {"clips":[{"id":"t0i0","silences":[{"start":1.2,"end":2.4}]}]}
+   The silence times are source times inside the media file, so each one is
+   mapped through the clip's in point, start and speed before anything else. */
+function qkSilenceSegments(payloadJson) {
+  var ctx = qkSilenceSequence();
+  if (ctx.error) return qkErr(ctx.error);
+
+  var payload = null;
+  try {
+    payload = qkJsonParse(payloadJson);
+  } catch (eParse) {
+    return qkErr("The silent ranges arrived damaged and were ignored. Scan again.");
+  }
+
+  if (!payload || !qkPresetIsArray(payload.clips) || !payload.clips.length) {
+    return qkErr("No silent ranges arrived from the audio analysis. Scan again.");
+  }
+
+  var read = qkSilenceReadClips(ctx.seq);
+  var byId = {};
+  var i;
+  var k;
+  for (i = 0; i < read.clips.length; i++) byId[read.clips[i].id] = read.clips[i];
+
+  var padBefore = qkSilenceNumber(payload.padBefore, 0);
+  var padAfter = qkSilenceNumber(payload.padAfter, 0);
+  var minLength = qkSilenceNumber(payload.minLength, 0);
+
+  var coverage = [];
+  var trackCoverage = {};
+  var trackSilence = {};
+  var matched = 0;
+
+  for (i = 0; i < payload.clips.length; i++) {
+    var entry = payload.clips[i];
+    if (!entry || !entry.id) continue;
+    var clip = byId[qkStr(entry.id)];
+    if (!clip) continue;
+    matched++;
+
+    var span = { start: clip.start, end: clip.end };
+    coverage.push(span);
+    if (!trackCoverage[clip.track]) trackCoverage[clip.track] = [];
+    trackCoverage[clip.track].push(span);
+    if (!trackSilence[clip.track]) trackSilence[clip.track] = [];
+
+    if (!qkPresetIsArray(entry.silences)) continue;
+    for (k = 0; k < entry.silences.length; k++) {
+      var pair = entry.silences[k];
+      if (!pair) continue;
+      var sourceStart = qkSilenceNumber(pair.start, -1);
+      var sourceEnd = qkSilenceNumber(pair.end, -1);
+      if (sourceStart < 0 || sourceEnd <= sourceStart) continue;
+
+      var tlStart = clip.start + (sourceStart - clip.inPoint) / clip.speed;
+      var tlEnd = clip.start + (sourceEnd - clip.inPoint) / clip.speed;
+      if (tlStart < clip.start) tlStart = clip.start;
+      if (tlEnd > clip.end) tlEnd = clip.end;
+      if (tlEnd <= tlStart) continue;
+
+      trackSilence[clip.track].push({ start: tlStart, end: tlEnd });
+    }
+  }
+
+  if (!matched) {
+    return qkErr("The sequence changed since the scan. Scan again before cutting.");
+  }
+
+  /* A range is only cut when every track that has sound there is silent. */
+  var audible = [];
+  var trackKey;
+  for (trackKey in trackSilence) {
+    if (!trackSilence.hasOwnProperty(trackKey)) continue;
+    audible = audible.concat(
+      qkSilenceSubtractIntervals(trackCoverage[trackKey] || [], trackSilence[trackKey])
+    );
+  }
+
+  var cuttable = qkSilenceSubtractIntervals(coverage, audible);
+
+  var padded = [];
+  for (i = 0; i < cuttable.length; i++) {
+    var start = cuttable[i].start + (padBefore > 0 ? padBefore : 0);
+    var end = cuttable[i].end - (padAfter > 0 ? padAfter : 0);
+    if (end - start <= 0.0005) continue;
+    if (minLength > 0 && end - start < minLength) continue;
+    padded.push({ start: qkSilenceRound(start), end: qkSilenceRound(end) });
+  }
+
+  var total = 0;
+  for (i = 0; i < padded.length; i++) total += padded[i].end - padded[i].start;
+
+  var sequence = null;
+  try {
+    sequence = { name: qkStr(ctx.seq.name), frameRate: qkSilenceFrameRate(ctx.seq) };
+  } catch (eSeq) {
+    sequence = { name: "", frameRate: 0 };
+  }
+
+  return qkJsonStringify({
+    ok: true,
+    segments: padded,
+    count: padded.length,
+    total: Math.round(total * 100) / 100,
+    sequence: sequence,
+    message:
+      padded.length === 0
+        ? "No cuttable silence was left after padding. Lower the threshold or the minimum length."
+        : "Found " + qkPlural(padded.length, "silent gap", "silent gaps") + " - " + (Math.round(total * 100) / 100) + " s in total."
+  });
+}
+
+/* ---------- markers ---------- */
+
+function qkSilenceMarkersFor(seq, segments, label, colorIndex) {
+  var markers = null;
+  var created = 0;
+  var i;
+  var marker;
+  var name;
+
+  try {
+    markers = seq.markers;
+  } catch (eMarkers) {
+    markers = null;
+  }
+
+  if (!markers) {
+    return { error: "This Premiere Pro build does not expose sequence markers to scripts." };
+  }
+
+  name = qkStr(label) === "" ? "QuickKit silence" : qkStr(label);
+
+  for (i = 0; i < segments.length; i++) {
+    marker = null;
+    try {
+      marker = markers.createMarker(segments[i].start);
+    } catch (eCreate) {
+      marker = null;
+    }
+    if (!marker) continue;
+
+    try {
+      marker.name = name + " " + (i + 1);
+    } catch (eName) {}
+    try {
+      marker.comments = "QuickKit silence " + (i + 1) + " of " + segments.length;
+    } catch (eComment) {}
+    try {
+      marker.end = segments[i].end;
+    } catch (eEnd) {}
+    try {
+      if (typeof marker.setColorByIndex === "function") marker.setColorByIndex(colorIndex);
+    } catch (eColor) {}
+
+    created++;
+  }
+
+  return { created: created };
+}
+
+function qkSilenceMarkers(payloadJson) {
+  var ctx = qkSilenceSequence();
+  if (ctx.error) return qkErr(ctx.error);
+
+  var payload = null;
+  try {
+    payload = qkJsonParse(payloadJson);
+  } catch (eParse) {
+    return qkErr("The segment list arrived damaged and was ignored. Scan again.");
+  }
+
+  var segments = qkSilenceSanitizeSegments(payload ? payload.segments : null);
+  if (!segments.length) return qkErr("No segments are switched on, so no markers were added.");
+
+  var started = qkBeginUndo("QuickKit: Silence markers");
+  var out = qkSilenceMarkersFor(
+    ctx.seq,
+    segments,
+    payload ? payload.label : "",
+    qkSilenceNumber(payload ? payload.colorIndex : 0, 0)
+  );
+  qkEndUndo(started);
+
+  if (out.error) return qkErr(out.error);
+
+  return qkOk(
+    "Added " + qkPlural(out.created, "coloured marker", "coloured markers") +
+    " to the sequence. One Ctrl+Z removes them."
+  );
+}
+
+function qkSilenceClearMarkers() {
+  var ctx = qkSilenceSequence();
+  if (ctx.error) return qkErr(ctx.error);
+
+  var seq = ctx.seq;
+  var markers = null;
+  var count = 0;
+  var removed = 0;
+  var i;
+  var marker;
+
+  try {
+    markers = seq.markers;
+    count = markers.numMarkers;
+  } catch (eMarkers) {
+    return qkErr("This Premiere Pro build does not expose sequence markers to scripts.");
+  }
+
+  var started = qkBeginUndo("QuickKit: Clear silence markers");
+
+  for (i = count - 1; i >= 0; i--) {
+    marker = null;
+    try {
+      marker = markers[i];
+    } catch (eMarker) {}
+    if (!marker) continue;
+    var name = "";
+    try {
+      name = qkStr(marker.name);
+    } catch (eName) {}
+    if (name.indexOf("QuickKit") !== 0) continue;
+    try {
+      marker.remove();
+      removed++;
+    } catch (eRemove) {}
+  }
+
+  qkEndUndo(started);
+
+  if (!removed) return qkOk("There were no QuickKit markers to remove.");
+  return qkOk("Removed " + qkPlural(removed, "QuickKit marker", "QuickKit markers") + ".");
+}
+
+/* ---------- apply ---------- */
+
+function qkSilenceSanitizeSegments(raw) {
+  var out = [];
+  var i;
+  var entry;
+  var start;
+  var end;
+
+  if (!qkPresetIsArray(raw)) return out;
+
+  for (i = 0; i < raw.length; i++) {
+    entry = raw[i];
+    if (!entry) continue;
+    start = qkSilenceNumber(entry.start, -1);
+    end = qkSilenceNumber(entry.end, -1);
+    if (start < 0 || end <= start) continue;
+    out.push({ start: start, end: end });
+  }
+
+  out.sort(function (a, b) {
+    return a.start - b.start;
+  });
+  return out;
+}
+
+function qkSilenceQe() {
+  try {
+    if (typeof app.enableQE !== "function") return null;
+    app.enableQE();
+    if (typeof qe === "undefined" || !qe || !qe.project) return null;
+    return qe;
+  } catch (eQe) {
+    return null;
+  }
+}
+
+function qkSilenceTrackCount(collection) {
+  var count = 0;
+  try {
+    count = collection.numTracks;
+  } catch (eCount) {
+    count = 0;
+  }
+  return count;
+}
+
+function qkSilenceRazorAt(qeSeq, time, audioCount, videoCount) {
+  var cuts = 0;
+  var i;
+  var track;
+
+  for (i = 0; i < audioCount; i++) {
+    track = null;
+    try {
+      track = qeSeq.getAudioTrackAt(i);
+    } catch (eAudio) {}
+    if (track && typeof track.razor === "function") {
+      try {
+        track.razor(time);
+        cuts++;
+      } catch (eRazor) {}
+    }
+  }
+
+  for (i = 0; i < videoCount; i++) {
+    track = null;
+    try {
+      track = qeSeq.getVideoTrackAt(i);
+    } catch (eVideo) {}
+    if (track && typeof track.razor === "function") {
+      try {
+        track.razor(time);
+        cuts++;
+      } catch (eRazorVideo) {}
+    }
+  }
+
+  return cuts;
+}
+
+/* Items fully inside [start, end] on one track. */
+function qkSilenceItemsInside(collection, start, end) {
+  var found = [];
+  var count = 0;
+  var i;
+  var item;
+  var itemStart;
+  var itemEnd;
+
+  try {
+    count = collection.clips.numItems;
+  } catch (eCount) {
+    count = 0;
+  }
+
+  for (i = 0; i < count; i++) {
+    item = null;
+    try {
+      item = collection.clips[i];
+    } catch (eItem) {}
+    if (!item) continue;
+    itemStart = qkSilenceNumber(item.start, -1);
+    itemEnd = qkSilenceNumber(item.end, -1);
+    if (itemStart < 0 || itemEnd <= itemStart) continue;
+    if (itemStart >= start - QK_SILENCE_EPS && itemEnd <= end + QK_SILENCE_EPS) {
+      found.push(item);
+    }
+  }
+
+  return found;
+}
+
+/* Delete one silent segment: every audio piece inside it goes, and the picture
+   pieces that were razored to the same edges go with them, otherwise the ripple
+   would slide the picture over itself. Pieces after the first are removed
+   without their own ripple and one piece carries the ripple for the segment,
+   so the timeline shortens exactly once. */
+function qkSilenceRemoveInside(seq, start, end) {
+  var groups = [];
+  var trackCount = 0;
+  var tracks = null;
+  var kind;
+  var t;
+  var track;
+  var pieces;
+  var i;
+  var rippleFrom = null;
+  var removed = 0;
+
+  try {
+    groups.push(seq.audioTracks);
+    groups.push(seq.videoTracks);
+  } catch (eGroups) {
+    return 0;
+  }
+
+  for (kind = 0; kind < groups.length; kind++) {
+    tracks = groups[kind];
+    trackCount = 0;
+    try {
+      trackCount = tracks.numTracks;
+    } catch (eCount) {
+      trackCount = 0;
+    }
+
+    for (t = 0; t < trackCount; t++) {
+      track = null;
+      try {
+        track = tracks[t];
+      } catch (eTrack) {}
+      if (!track) continue;
+
+      pieces = qkSilenceItemsInside(track, start, end);
+      for (i = 0; i < pieces.length; i++) {
+        if (rippleFrom === null) {
+          rippleFrom = pieces[i];
+          continue;
+        }
+        try {
+          pieces[i].remove(false, false);
+          removed++;
+        } catch (eRemove) {}
+      }
+    }
+  }
+
+  if (rippleFrom === null) return 0;
+
+  try {
+    rippleFrom.remove(true, true);
+    removed++;
+  } catch (eRipple) {}
+
+  return removed;
+}
+
+function qkSilenceMuteItem(item) {
+  var components = null;
+  var count = 0;
+  var i;
+  var k;
+  var component;
+  var name;
+  var params = null;
+  var paramCount = 0;
+
+  try {
+    components = item.components;
+    count = components.numItems;
+  } catch (eComponents) {
+    return false;
+  }
+
+  for (i = 0; i < count; i++) {
+    component = null;
+    try {
+      component = components[i];
+    } catch (eComponent) {}
+    if (!component) continue;
+
+    name = "";
+    try {
+      name = qkStr(component.displayName);
+    } catch (eName) {}
+
+    if (!/volume/i.test(name)) continue;
+
+    params = null;
+    paramCount = 0;
+    try {
+      params = component.properties;
+      paramCount = params.numItems;
+    } catch (eParams) {
+      paramCount = 0;
+    }
+
+    for (k = 0; k < paramCount; k++) {
+      try {
+        params[k].setValue(-96, true);
+        return true;
+      } catch (eSet) {}
+    }
+  }
+
+  return false;
+}
+
+function qkSilenceMuteInside(seq, start, end) {
+  var tracks = null;
+  var trackCount = 0;
+  var t;
+  var track;
+  var pieces;
+  var i;
+  var muted = 0;
+
+  try {
+    tracks = seq.audioTracks;
+    trackCount = tracks.numTracks;
+  } catch (eTracks) {
+    return 0;
+  }
+
+  for (t = 0; t < trackCount; t++) {
+    track = null;
+    try {
+      track = tracks[t];
+    } catch (eTrack) {}
+    if (!track) continue;
+
+    pieces = qkSilenceItemsInside(track, start, end);
+    for (i = 0; i < pieces.length; i++) {
+      if (qkSilenceMuteItem(pieces[i])) muted++;
+    }
+  }
+
+  return muted;
+}
+
+function qkSilenceEdit(seq, segments, mode, payloadJson) {
+  var qe = qkSilenceQe();
+  if (!qe) {
+    return {
+      error:
+        "Premiere's scripting razor is not available in this build of Premiere Pro. Nothing was changed. " +
+        "Use the Only mark mode to place the markers, then cut by hand."
+    };
+  }
+
+  var qeSeq = null;
+  try {
+    qeSeq = qe.project.getActiveSequence();
+  } catch (eSeq) {
+    qeSeq = null;
+  }
+  if (!qeSeq) {
+    return { error: "Premiere did not return the active sequence to the razor. Nothing was changed." };
+  }
+
+  var audioCount = 0;
+  var videoCount = 0;
+  try {
+    audioCount = qkSilenceTrackCount(seq.audioTracks);
+  } catch (eAudio) {}
+  try {
+    videoCount = qkSilenceTrackCount(seq.videoTracks);
+  } catch (eVideo) {}
+
+  /* Mute mode keeps the picture where it is, so the video tracks are not
+     razored: a cut that is never removed would only split the video clips. */
+  if (mode === "mute") videoCount = 0;
+
+  var order = segments.slice(0).sort(function (a, b) {
+    return b.start - a.start;
+  });
+
+  var razors = 0;
+  var removed = 0;
+  var muted = 0;
+  var i;
+
+  for (i = 0; i < order.length; i++) {
+    razors += qkSilenceRazorAt(qeSeq, order[i].start, audioCount, videoCount);
+    razors += qkSilenceRazorAt(qeSeq, order[i].end, audioCount, videoCount);
+  }
+
+  if (razors === 0) {
+    return {
+      error:
+        "Premiere refused every razor call, so nothing was cut. Use the Only mark mode and cut by hand, " +
+        "then report this in the QuickKit issue list."
+    };
+  }
+
+  var payload = null;
+  try {
+    payload = payloadJson ? qkJsonParse(payloadJson) : null;
+  } catch (ePayload) {
+    payload = null;
+  }
+
+  if (mode === "delete") {
+    for (i = 0; i < order.length; i++) {
+      if (qkSilenceRemoveInside(seq, order[i].start, order[i].end) > 0) removed++;
+    }
+    if (removed === 0) {
+      return { error: "The razor cut the clips but no silent piece could be removed. Nothing was deleted." };
+    }
+    var left = order.length - removed;
+    var message =
+      "Cut out " + qkPlural(removed, "silent gap", "silent gaps") + " and ripple deleted them (one undo step).";
+    if (left > 0) {
+      message += " " + qkPlural(left, "gap was", "gaps were") + " left alone - check the timeline.";
+    }
+    return { message: message };
+  }
+
+  for (i = 0; i < order.length; i++) {
+    muted += qkSilenceMuteInside(seq, order[i].start, order[i].end);
+  }
+
+  if (muted === 0) {
+    return {
+      error:
+        "The clips were cut but no Volume control could be found to mute, so the timeline is unchanged apart from the cuts. " +
+        "Undo, then use Delete instead."
+    };
+  }
+
+  return {
+    message:
+      "Cut " + qkPlural(order.length, "gap", "gaps") + " and muted " + qkPlural(muted, "piece", "pieces") +
+      " in place. Premiere's scripting cannot move clips to another track, so they stay where they are and are silenced. One undo step."
+  };
+}
+
+function qkSilenceApply(payloadJson) {
+  var ctx = qkSilenceSequence();
+  if (ctx.error) return qkErr(ctx.error);
+
+  var payload = null;
+  try {
+    payload = qkJsonParse(payloadJson);
+  } catch (eParse) {
+    return qkErr("The settings arrived damaged and nothing was changed. Scan again.");
+  }
+
+  var mode = payload && payload.mode ? qkStr(payload.mode) : "delete";
+  if (!qkInList(mode, ["delete", "mark", "mute"])) {
+    return qkErr("Unknown mode. Pick Delete, Only mark or Mute.");
+  }
+
+  var segments = qkSilenceSanitizeSegments(payload ? payload.segments : null);
+  if (!segments.length) {
+    return qkErr("No segments are switched on. Tick at least one gap first.");
+  }
+
+  var started = qkBeginUndo("QuickKit: Silence cutter");
+  var out;
+
+  try {
+    if (mode === "mark") {
+      out = qkSilenceMarkersFor(
+        ctx.seq,
+        segments,
+        payload ? payload.label : "",
+        qkSilenceNumber(payload ? payload.colorIndex : 0, 0)
+      );
+      if (!out.error) {
+        out.message =
+          "Added " + qkPlural(out.created, "coloured marker", "coloured markers") +
+          ". Nothing else was changed. One undo step.";
+      }
+    } else {
+      out = qkSilenceEdit(ctx.seq, segments, mode, payloadJson);
+    }
+  } catch (eApply) {
+    qkEndUndo(started);
+    return qkErr("The cut stopped part way: " + qkErrText(eApply) + ". Press Ctrl+Z to undo what was done.");
+  }
+
+  qkEndUndo(started);
+
+  if (out.error) return qkErr(out.error);
+  return qkOk(out.message);
+}

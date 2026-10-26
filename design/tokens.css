@@ -176,6 +176,21 @@
   /* Tool panels */
   --qk-panel-max: 480px;
 
+  /* Silence cutter (Part 5) */
+  --qk-wave-h: 96px;
+  --qk-wave-bg: var(--qk-bg);
+  --qk-wave-border: var(--qk-border);
+  --qk-wave-fill: var(--qk-muted);
+  --qk-wave-hit: var(--qk-accent);
+  --qk-wave-hit-soft: rgba(124, 92, 255, 0.26);
+  --qk-wave-off: rgba(139, 144, 160, 0.28);
+  --qk-progress-h: 4px;
+  --qk-progress-track: var(--qk-border);
+  --qk-progress-fill: var(--qk-accent);
+  --qk-seg-list-max: 168px;
+  --qk-range-h: 4px;
+  --qk-range-knob: 12px;
+
   /* Layers */
   --qk-z-tooltip: 40;
   --qk-z-overlay: 30;

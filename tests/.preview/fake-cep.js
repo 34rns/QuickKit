@@ -7,6 +7,13 @@
   var seeded = 15;
   var order = 0;
 
+  /* ?host=PPRO pretends to be Premiere Pro; anything else is After Effects. */
+  var query = String((window.location && window.location.search) || "");
+  var premiere = query.indexOf("host=PPRO") !== -1;
+  var host = premiere
+    ? { appName: "PPRO", appVersion: "26.0.2" }
+    : { appName: "AEFT", appVersion: "26.5" };
+
   function color(hex) {
     var value = parseInt(hex, 16);
     return [
@@ -113,14 +120,51 @@
       var preset;
 
       if (script.indexOf("qkHostInfo") === 0) {
+        reply = premiere
+          ? {
+              ok: true,
+              host: "PPRO",
+              hostName: "Premiere Pro",
+              version: "26.0.2",
+              build: "26.0.2",
+              project: "QuickKit test.prproj",
+              engine: "ExtendScript"
+            }
+          : {
+              ok: true,
+              host: "AEFT",
+              hostName: "After Effects",
+              version: "26.5",
+              build: "26.5.0",
+              project: "QuickKit test.aep",
+              engine: "ExtendScript"
+            };
+      } else if (script.indexOf("qkSilenceTargets") === 0) {
+        /* A stand-in sequence so the panel can lay itself out. There is no Node
+           in a browser, so a scan stops at "Node is not available" — which is
+           the path this preview is meant to check. */
         reply = {
           ok: true,
-          host: "AEFT",
-          hostName: "After Effects",
-          version: "26.5",
-          build: "26.5.0",
-          project: "QuickKit test.aep",
-          engine: "ExtendScript"
+          scope: values[0] || "sequence",
+          clips: [
+            {
+              id: "t0i0",
+              name: "Take 1",
+              path: "C:/Media/Take 1.wav",
+              track: 0,
+              trackName: "A1",
+              start: 0,
+              end: 12,
+              inPoint: 0,
+              outPoint: 12,
+              duration: 12,
+              speed: 1,
+              hasAudio: true
+            }
+          ],
+          sequence: { name: "QuickKit test sequence", frameRate: 25, end: 12 },
+          notes: [],
+          message: "1 audio clip"
         };
       } else if (script.indexOf("qkPresetList") === 0) {
         reply = listReply();
@@ -191,7 +235,7 @@
   window.__fakeCalls = [];
   window.__adobe_cep__ = {
     getHostEnvironment: function () {
-      return JSON.stringify({ appName: "AEFT", appVersion: "26.5" });
+      return JSON.stringify(host);
     },
     evalScript: evalScript
   };

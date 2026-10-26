@@ -1841,6 +1841,563 @@ test("a multi-layer preset maps onto selected layers in order", function () {
   assert.ok(/only 1 of 2/.test(applied.message), applied.message);
 });
 
+/* ---------------- mock Premiere Pro ----------------
+ * A small model of the Premiere object model used by the Silence tool:
+ * sequence -> audioTracks -> clips, sequence markers, and the QE razor.
+ * It is a model, not Premiere: it proves the mapping and control flow only.
+ */
+
+function createPremiereWorld(options) {
+  var opts = options || {};
+  var undo = { open: 0, close: 0, names: [] };
+  var nodeCounter = 0;
+
+  var world = {
+    undo: undo,
+    audioTracks: [],
+    videoTracks: [],
+    razors: 0,
+    razorTimes: [],
+    selection: [],
+    qeEnabled: false,
+    markers: []
+  };
+
+  function liveList(list) {
+    return new Proxy(
+      {},
+      {
+        get: function (target, prop) {
+          if (prop === "numItems" || prop === "numTracks") return list.length;
+          if (typeof prop === "string" && /^[0-9]+$/.test(prop)) return list[Number(prop)];
+          return target[prop];
+        }
+      }
+    );
+  }
+
+  function newClip(track, spec) {
+    var components = [
+      {
+        displayName: "Volume",
+        properties: liveList([
+          {
+            label: "Level",
+            value: 0,
+            setValue: function (value) {
+              this.value = value;
+            }
+          }
+        ])
+      }
+    ];
+
+    nodeCounter++;
+    var clip = {
+      name: spec.name || "clip",
+      start: spec.start,
+      end: spec.end,
+      inPoint: typeof spec.inPoint === "number" ? spec.inPoint : 0,
+      speed: typeof spec.speed === "number" ? spec.speed : 1,
+      nodeId: spec.nodeId || "node" + nodeCounter,
+      projectItem: {
+        getMediaPath: function () {
+          return spec.path || "";
+        }
+      },
+      components: liveList(components),
+      _track: track,
+      _components: components,
+      _path: spec.path || ""
+    };
+
+    clip.remove = function (ripple) {
+      var list = track._clips;
+      var at = list.indexOf(clip);
+      if (at < 0) throw new Error("clip is not on its track");
+      var from = clip.start;
+      var length = clip.end - clip.start;
+      list.splice(at, 1);
+      if (!ripple) return;
+      /* Premiere ripples the tracks that follow: everything starting at or
+         after the removed piece moves left by its length. */
+      world.audioTracks.concat(world.videoTracks).forEach(function (each) {
+        each._clips.forEach(function (other) {
+          if (other.start >= from + length - 0.001) {
+            other.start -= length;
+            other.end -= length;
+          }
+        });
+      });
+    };
+
+    return clip;
+  }
+
+  function addClip(track, spec) {
+    var clip = newClip(track, spec);
+    track._clips.push(clip);
+    track._clips.sort(function (a, b) {
+      return a.start - b.start;
+    });
+    return clip;
+  }
+
+  function razorList(track, time) {
+    var list = track._clips;
+    var i;
+    var clip;
+    var right;
+
+    for (i = 0; i < list.length; i++) {
+      clip = list[i];
+      if (time <= clip.start + 0.0001 || time >= clip.end - 0.0001) continue;
+
+      right = newClip(track, {
+        name: clip.name,
+        path: clip._path,
+        nodeId: clip.nodeId,
+        start: time,
+        end: clip.end,
+        inPoint: clip.inPoint + (time - clip.start) * clip.speed,
+        speed: clip.speed
+      });
+      clip.end = time;
+      list.splice(i + 1, 0, right);
+      world.razors++;
+      world.razorTimes.push(time);
+      return true;
+    }
+
+    return false;
+  }
+
+  var markers = new Proxy(
+    {},
+    {
+      get: function (target, prop) {
+        if (prop === "numMarkers") return world.markers.length;
+        if (typeof prop === "string" && /^[0-9]+$/.test(prop)) return world.markers[Number(prop)];
+        if (prop === "createMarker") {
+          return function (time) {
+            var marker = {
+              name: "",
+              comments: "",
+              start: time,
+              end: time,
+              color: -1,
+              setColorByIndex: function (index) {
+                this.color = index;
+              },
+              remove: function () {
+                var at = world.markers.indexOf(marker);
+                if (at >= 0) world.markers.splice(at, 1);
+              }
+            };
+            world.markers.push(marker);
+            return marker;
+          };
+        }
+        return target[prop];
+      }
+    }
+  );
+
+  var sequence = {
+    name: opts.name || "Silence test sequence",
+    timebase: 10160640000, /* 254016000000 / 25 = 25 fps */
+    markers: markers,
+    getSelection: function () {
+      return world.selection;
+    }
+  };
+
+  var qeSequence = {
+    getAudioTrackAt: function (index) {
+      return {
+        razor: function (time) {
+          return razorList(world.audioTracks[index], time);
+        }
+      };
+    },
+    getVideoTrackAt: function (index) {
+      return {
+        razor: function (time) {
+          return razorList(world.videoTracks[index], time);
+        }
+      };
+    }
+  };
+
+  var qe = opts.noQe ? null : {
+    project: {
+      getActiveSequence: function () {
+        return qeSequence;
+      }
+    }
+  };
+
+  var app = {
+    version: "26.0.2",
+    project: {
+      activeSequence: opts.noSequence ? null : sequence,
+      file: { name: "silence.prproj" }
+    },
+    enableQE: function () {
+      world.qeEnabled = true;
+    },
+    beginUndoGroup: function (name) {
+      undo.open++;
+      undo.names.push(name);
+    },
+    endUndoGroup: function () {
+      undo.close++;
+    }
+  };
+
+  var sandbox = {
+    app: app,
+    qe: qe,
+    BridgeTalk: { appName: "premierepro" },
+    File: function () {},
+    Folder: function () {},
+    parseFloat: parseFloat,
+    parseInt: parseInt,
+    isNaN: isNaN
+  };
+
+  vm.createContext(sandbox);
+  vm.runInContext(SOURCE, sandbox, { filename: "quickkit.jsx" });
+
+  sequence.audioTracks = liveList(world.audioTracks);
+  sequence.videoTracks = liveList(world.videoTracks);
+
+  world.sandbox = sandbox;
+  world.app = app;
+  world.sequence = sequence;
+
+  world.addAudioTrack = function (name) {
+    var track = { name: name, _clips: [] };
+    track.clips = liveList(track._clips);
+    world.audioTracks.push(track);
+    return track;
+  };
+
+  world.addVideoTrack = function (name) {
+    var track = { name: name, _clips: [] };
+    track.clips = liveList(track._clips);
+    world.videoTracks.push(track);
+    return track;
+  };
+
+  world.addClip = addClip;
+
+  return world;
+}
+
+function silencePayloadFor(world, extra) {
+  var targets = JSON.parse(world.sandbox.qkSilenceTargets("sequence"));
+  var payload = { clips: [], padBefore: 0, padAfter: 0, minLength: 0 };
+  var key;
+  for (key in extra || {}) {
+    if (extra.hasOwnProperty(key)) payload[key] = extra[key];
+  }
+  return { targets: targets, payload: payload };
+}
+
+test("silence targets lists the sequence audio clips", function () {
+  var world = createPremiereWorld();
+  var a1 = world.addAudioTrack("A1");
+  var a2 = world.addAudioTrack("Dialogue");
+  world.addClip(a1, { name: "Take 1", path: "D:\\Clips\\Take 1.wav", start: 0, end: 10, inPoint: 2 });
+  world.addClip(a2, { name: "Music", path: "D:\\??\\? ??.mp3", start: 5, end: 20 });
+
+  var result = JSON.parse(world.sandbox.qkSilenceTargets("sequence"));
+  assert.strictEqual(result.ok, true, result.error);
+  assert.strictEqual(result.clips.length, 2);
+  assert.strictEqual(result.clips[0].path, "D:\\Clips\\Take 1.wav");
+  assert.strictEqual(result.clips[0].trackName, "A1");
+  assert.strictEqual(result.clips[0].inPoint, 2);
+  assert.strictEqual(result.clips[1].track, 1);
+  assert.strictEqual(result.clips[1].path, "D:\\??\\? ??.mp3");
+  assert.strictEqual(result.sequence.frameRate, 25);
+  assert.strictEqual(result.sequence.end, 20);
+  assert.strictEqual(world.undo.open, 0, "listing must not open an undo group");
+});
+
+test("silence targets narrows to the selected clips", function () {
+  var world = createPremiereWorld();
+  var a1 = world.addAudioTrack("A1");
+  var first = world.addClip(a1, { name: "Keep", path: "C:\\a.wav", start: 0, end: 5 });
+  world.addClip(a1, { name: "Skip", path: "C:\\b.wav", start: 5, end: 10 });
+
+  world.selection = [{ nodeId: first.nodeId }];
+  var one = JSON.parse(world.sandbox.qkSilenceTargets("selection"));
+  assert.strictEqual(one.ok, true, one.error);
+  assert.strictEqual(one.scope, "selection");
+  assert.strictEqual(one.clips.length, 1);
+  assert.strictEqual(one.clips[0].name, "Keep");
+
+  world.selection = [];
+  var fallback = JSON.parse(world.sandbox.qkSilenceTargets("selection"));
+  assert.strictEqual(fallback.scope, "sequence");
+  assert.strictEqual(fallback.clips.length, 2);
+  assert.ok(fallback.notes.length >= 1, "the fallback is explained");
+});
+
+test("silence targets explains itself outside a Premiere sequence", function () {
+  var comp = new MockComp();
+  var world = createWorld(comp);
+  var result = JSON.parse(world.sandbox.qkSilenceTargets("sequence"));
+  assert.strictEqual(result.ok, false);
+  assert.ok(/No open sequence/.test(result.error), result.error);
+});
+
+test("silence segments map source time through in point and speed", function () {
+  var world = createPremiereWorld();
+  var track = world.addAudioTrack("A1");
+  world.addClip(track, { name: "Fast", path: "C:\\a.wav", start: 4, end: 14, inPoint: 10, speed: 2 });
+
+  var targets = JSON.parse(world.sandbox.qkSilenceTargets("sequence"));
+  var payload = {
+    clips: [{ id: targets.clips[0].id, silences: [{ start: 12, end: 16 }] }],
+    padBefore: 0,
+    padAfter: 0,
+    minLength: 0
+  };
+
+  var result = JSON.parse(world.sandbox.qkSilenceSegments(JSON.stringify(payload)));
+  assert.strictEqual(result.ok, true, result.error);
+  assert.strictEqual(result.segments.length, 1);
+  assert.ok(Math.abs(result.segments[0].start - 5) < 0.001, "start " + result.segments[0].start);
+  assert.ok(Math.abs(result.segments[0].end - 7) < 0.001, "end " + result.segments[0].end);
+  assert.strictEqual(result.count, 1);
+  assert.ok(/2 s in total/.test(result.message), result.message);
+});
+
+test("silence segments keeps a gap only when every sounding track is quiet", function () {
+  var world = createPremiereWorld();
+  var a1 = world.addAudioTrack("A1");
+  var a2 = world.addAudioTrack("A2");
+  world.addClip(a1, { name: "Voice", path: "C:\\voice.wav", start: 0, end: 10 });
+  world.addClip(a2, { name: "Room", path: "C:\\room.wav", start: 0, end: 10 });
+
+  var targets = JSON.parse(world.sandbox.qkSilenceTargets("sequence"));
+  var busy = {
+    clips: [
+      { id: targets.clips[0].id, silences: [{ start: 2, end: 4 }] },
+      { id: targets.clips[1].id, silences: [] }
+    ],
+    padBefore: 0,
+    padAfter: 0,
+    minLength: 0
+  };
+
+  var blocked = JSON.parse(world.sandbox.qkSilenceSegments(JSON.stringify(busy)));
+  assert.strictEqual(blocked.ok, true, blocked.error);
+  assert.strictEqual(blocked.segments.length, 0, "the second track still has sound there");
+
+  busy.clips[1].silences = [{ start: 1.5, end: 5 }];
+  var shared = JSON.parse(world.sandbox.qkSilenceSegments(JSON.stringify(busy)));
+  assert.strictEqual(shared.segments.length, 1);
+  assert.ok(Math.abs(shared.segments[0].start - 2) < 0.001, "intersection start");
+  assert.ok(Math.abs(shared.segments[0].end - 4) < 0.001, "intersection end");
+});
+
+test("silence segments applies padding and the minimum length", function () {
+  var world = createPremiereWorld();
+  var track = world.addAudioTrack("A1");
+  world.addClip(track, { name: "Voice", path: "C:\\voice.wav", start: 0, end: 10 });
+
+  var targets = JSON.parse(world.sandbox.qkSilenceTargets("sequence"));
+  var payload = {
+    clips: [{ id: targets.clips[0].id, silences: [{ start: 2, end: 4 }] }],
+    padBefore: 0.25,
+    padAfter: 0.5,
+    minLength: 0
+  };
+
+  var padded = JSON.parse(world.sandbox.qkSilenceSegments(JSON.stringify(payload)));
+  assert.strictEqual(padded.segments.length, 1);
+  assert.ok(Math.abs(padded.segments[0].start - 2.25) < 0.001, "padded start");
+  assert.ok(Math.abs(padded.segments[0].end - 3.5) < 0.001, "padded end");
+
+  payload.minLength = 2;
+  var dropped = JSON.parse(world.sandbox.qkSilenceSegments(JSON.stringify(payload)));
+  assert.strictEqual(dropped.segments.length, 0);
+  assert.ok(/No cuttable silence/.test(dropped.message), dropped.message);
+});
+
+test("silence segments clamps a gap that starts before the clip in point", function () {
+  var world = createPremiereWorld();
+  var track = world.addAudioTrack("A1");
+  world.addClip(track, { name: "Trimmed", path: "C:\\a.wav", start: 0, end: 10, inPoint: 5 });
+
+  var targets = JSON.parse(world.sandbox.qkSilenceTargets("sequence"));
+  var payload = {
+    clips: [{ id: targets.clips[0].id, silences: [{ start: 2, end: 8 }] }],
+    padBefore: 0,
+    padAfter: 0,
+    minLength: 0
+  };
+
+  var result = JSON.parse(world.sandbox.qkSilenceSegments(JSON.stringify(payload)));
+  assert.strictEqual(result.segments.length, 1);
+  assert.ok(Math.abs(result.segments[0].start - 0) < 0.001, "clamped to the clip start");
+  assert.ok(Math.abs(result.segments[0].end - 3) < 0.001, "end follows the in point");
+});
+
+test("silence segments refuses a payload from an older scan", function () {
+  var world = createPremiereWorld();
+  var track = world.addAudioTrack("A1");
+  world.addClip(track, { name: "Voice", path: "C:\\voice.wav", start: 0, end: 10 });
+
+  var stale = JSON.stringify({ clips: [{ id: "t9i9", silences: [] }] });
+  var result = JSON.parse(world.sandbox.qkSilenceSegments(stale));
+  assert.strictEqual(result.ok, false);
+  assert.ok(/Scan again/.test(result.error), result.error);
+});
+
+test("mark mode adds coloured markers and nothing else, in one undo step", function () {
+  var world = createPremiereWorld();
+  var track = world.addAudioTrack("A1");
+  world.addClip(track, { name: "Voice", path: "C:\\voice.wav", start: 0, end: 20 });
+
+  var payload = {
+    mode: "mark",
+    segments: [{ start: 2, end: 4 }, { start: 6, end: 7 }],
+    label: "QuickKit silence",
+    colorIndex: 4
+  };
+
+  var result = JSON.parse(world.sandbox.qkSilenceApply(JSON.stringify(payload)));
+  assert.strictEqual(result.ok, true, result.error);
+  assert.strictEqual(world.markers.length, 2);
+  assert.strictEqual(world.markers[0].name, "QuickKit silence 1");
+  assert.ok(Math.abs(world.markers[0].end - 4) < 0.001, "marker spans the gap");
+  assert.strictEqual(world.markers[1].color, 4);
+  assert.strictEqual(world.razors, 0, "marking never razors");
+  assert.strictEqual(world.undo.open, 1);
+  assert.strictEqual(world.undo.close, 1);
+  assert.ok(/coloured markers/.test(result.message), result.message);
+});
+
+test("delete mode razors both edges and ripples once per segment", function () {
+  var world = createPremiereWorld();
+  var video = world.addVideoTrack("V1");
+  var a1 = world.addAudioTrack("A1");
+  var a2 = world.addAudioTrack("A2");
+  world.addClip(video, { name: "Picture", path: "", start: 0, end: 20 });
+  world.addClip(a1, { name: "Voice", path: "C:\\voice.wav", start: 0, end: 20 });
+  world.addClip(a2, { name: "Room", path: "C:\\room.wav", start: 0, end: 20 });
+
+  var payload = {
+    mode: "delete",
+    segments: [{ start: 2, end: 4 }, { start: 10, end: 12 }],
+    label: "QuickKit silence",
+    colorIndex: 4
+  };
+
+  var result = JSON.parse(world.sandbox.qkSilenceApply(JSON.stringify(payload)));
+  assert.strictEqual(result.ok, true, result.error);
+  assert.strictEqual(world.undo.open, 1);
+  assert.strictEqual(world.undo.close, 1);
+
+  /* 2 audio + 1 video track, 4 edge times. */
+  assert.strictEqual(world.razors, 12, "razor every track at every edge");
+
+  var voice = world.audioTracks[0]._clips;
+  assert.strictEqual(voice.length, 3, "two gaps leave three pieces");
+  assert.ok(Math.abs(voice[0].start - 0) < 0.001 && Math.abs(voice[0].end - 2) < 0.001, "first piece");
+  assert.ok(Math.abs(voice[1].start - 2) < 0.001 && Math.abs(voice[1].end - 8) < 0.001, "middle piece");
+  assert.ok(Math.abs(voice[2].start - 8) < 0.001 && Math.abs(voice[2].end - 16) < 0.001, "last piece");
+
+  var room = world.audioTracks[1]._clips;
+  assert.strictEqual(room.length, 3, "the second audio track loses its pieces too");
+
+  var picture = world.videoTracks[0]._clips;
+  assert.strictEqual(picture.length, 3, "linked video is cut to the same length");
+  assert.ok(Math.abs(picture[2].end - 16) < 0.001, "the sequence is 16 s long now");
+
+  assert.ok(/2 silent gaps/.test(result.message), result.message);
+});
+
+test("mute mode silences the cut pieces and leaves the length alone", function () {
+  var world = createPremiereWorld();
+  var video = world.addVideoTrack("V1");
+  var a1 = world.addAudioTrack("A1");
+  world.addClip(video, { name: "Picture", path: "", start: 0, end: 20 });
+  world.addClip(a1, { name: "Voice", path: "C:\\voice.wav", start: 0, end: 20 });
+
+  var payload = { mode: "mute", segments: [{ start: 2, end: 4 }], label: "QuickKit silence", colorIndex: 4 };
+  var result = JSON.parse(world.sandbox.qkSilenceApply(JSON.stringify(payload)));
+  assert.strictEqual(result.ok, true, result.error);
+
+  var track = world.audioTracks[0]._clips;
+  assert.strictEqual(track.length, 3, "the gap is a separate piece");
+  var last = track[track.length - 1];
+  assert.ok(Math.abs(last.end - 20) < 0.001, "the sequence keeps its length: " + last.end);
+
+  assert.strictEqual(world.videoTracks[0]._clips.length, 1, "mute mode leaves the picture unsplit");
+  var muted = track.filter(function (clip) {
+    return clip._components[0].properties[0].value === -96;
+  });
+  assert.strictEqual(muted.length, 1, "exactly the gap is muted");
+  assert.ok(Math.abs(muted[0].start - 2) < 0.001 && Math.abs(muted[0].end - 4) < 0.001, "the muted piece is the gap");
+  assert.strictEqual(world.undo.open, 1);
+  assert.strictEqual(world.undo.close, 1);
+});
+
+test("apply refuses every mode when the QE razor is missing", function () {
+  var world = createPremiereWorld({ noQe: true });
+  var a1 = world.addAudioTrack("A1");
+  world.addClip(a1, { name: "Voice", path: "C:\\voice.wav", start: 0, end: 10 });
+
+  var payload = { mode: "delete", segments: [{ start: 2, end: 4 }] };
+  var result = JSON.parse(world.sandbox.qkSilenceApply(JSON.stringify(payload)));
+  assert.strictEqual(result.ok, false);
+  assert.ok(/razor/i.test(result.error), result.error);
+  assert.strictEqual(world.audioTracks[0]._clips.length, 1, "nothing was cut");
+  assert.strictEqual(world.undo.open, 1);
+  assert.strictEqual(world.undo.close, 1, "the undo group is still closed");
+});
+
+test("clear markers removes the QuickKit ones only", function () {
+  var world = createPremiereWorld();
+  var track = world.addAudioTrack("A1");
+  world.addClip(track, { name: "Voice", path: "C:\\voice.wav", start: 0, end: 10 });
+
+  world.sequence.markers.createMarker(1).name = "Chapter 1";
+  world.sequence.markers.createMarker(2).name = "QuickKit silence 1";
+  world.sequence.markers.createMarker(3).name = "QuickKit silence 2";
+
+  var result = JSON.parse(world.sandbox.qkSilenceClearMarkers());
+  assert.strictEqual(result.ok, true, result.error);
+  assert.strictEqual(world.markers.length, 1);
+  assert.strictEqual(world.markers[0].name, "Chapter 1");
+  assert.strictEqual(world.undo.open, 1);
+  assert.strictEqual(world.undo.close, 1);
+});
+
+test("apply rejects an unknown mode and an empty segment list", function () {
+  var world = createPremiereWorld();
+  var track = world.addAudioTrack("A1");
+  world.addClip(track, { name: "Voice", path: "C:\\voice.wav", start: 0, end: 10 });
+
+  var wrongMode = JSON.parse(
+    world.sandbox.qkSilenceApply(JSON.stringify({ mode: "explode", segments: [{ start: 1, end: 2 }] }))
+  );
+  assert.strictEqual(wrongMode.ok, false);
+  assert.ok(/Unknown mode/.test(wrongMode.error), wrongMode.error);
+
+  var empty = JSON.parse(world.sandbox.qkSilenceApply(JSON.stringify({ mode: "delete", segments: [] })));
+  assert.strictEqual(empty.ok, false);
+  assert.ok(/No segments/.test(empty.error), empty.error);
+
+  assert.strictEqual(world.undo.open, 0, "a rejected request changes nothing");
+});
+
+/* ---------------- report ---------------- */
 /* ---------------- report ---------------- */
 
 console.log("");

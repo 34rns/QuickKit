@@ -4,9 +4,9 @@ A free, local-only panel for **Adobe After Effects** and **Adobe Premiere Pro**
 on Windows 10 and 11. One extension, seven tools, no account, no cloud, no
 tracking.
 
-Version **0.4.0** — Part 4: a full preset manager joins the live After Effects
-tools (anchor, text, layers, easing), plus the Part 1 shell, host test and
-installer.
+Version **0.5.0** — Part 5: a silence cutter for Premiere Pro joins the live
+After Effects tools (anchor, text, layers, easing, presets), plus the Part 1
+shell, host test and installer.
 
 ---
 
@@ -18,6 +18,8 @@ installer.
   Pro"** or **"Available in After Effects"** instead of disappearing.
 - A **Presets** library with folders, search, favourites, drag reordering,
   pack import/export and 15 original starters — all stored on your PC.
+- A **Silence cutter** for Premiere Pro: FFmpeg finds the gaps in the sequence
+  audio, you check them on a waveform, then cut them out in one undo step.
 - **Test host connection** asks the app for its name and version and shows the
   answer. This is the proof the panel talks to the application.
 - A welcome screen on first run, and a help button to bring it back.
@@ -25,10 +27,10 @@ installer.
   something to undo).
 - Works from a 240px to 600px wide panel.
 
-The Anchor, Presets, Text, Layers and Easing tabs are live in After Effects.
-Bridge is still a shell, and the Premiere-only Silence tab stays locked until
-its tool exists. Every tool press is **one undo group**: press Ctrl+Z once in
-After Effects to reverse the whole action.
+The Anchor, Presets, Text, Layers and Easing tabs are live in After Effects,
+and the Silence tab is live in Premiere Pro. Bridge is still a shell. Every
+tool press is **one undo group**: press Ctrl+Z once to reverse the whole
+action.
 
 ---
 
@@ -107,12 +109,52 @@ working and never crashes on it.
 
 ---
 
+## Premiere Pro tools
+
+### Silence
+
+Find the silent gaps in a sequence and cut them out, with a preview before
+anything changes.
+
+- **Scan** the whole sequence or only the clips you selected. Every audio track
+  is read; a gap is only offered when **every track that has sound there is
+  quiet**, so a music bed or room tone cannot be cut by accident.
+- **Controls:** threshold in dB, minimum silence length, padding before and
+  after each cut, and *Cut through short breaths* (merges a pause and the breath
+  inside it into one cut).
+- **Preview first.** The panel draws a waveform of the sequence audio, shades
+  each detected gap over it, and lists every gap with its time and length. Click
+  a row to switch that gap off, and it is left alone. Coloured sequence markers
+  are added for the same gaps so you can see them in the Timeline.
+- **Apply** as **Delete and ripple**, **Only mark**, or **Mute in place**, as
+  one undo group. Delete razors both edges on the audio and linked video tracks
+  and ripples once per gap; mute keeps the sequence length and silences the cut
+  pieces (Premiere's scripting cannot move clips to another track).
+- **Long files** run out of process with a progress bar and a working **Cancel**
+  button, so the panel never freezes. A clip with no audio, or one whose media
+  is offline, is named and skipped instead of stopping the scan.
+- Paths with spaces, `#`, `&` and non-English characters work: FFmpeg is started
+  from an argument array, never through a shell.
+
+**FFmpeg.** The audio analysis is done by FFmpeg, a separate command-line
+program that QuickKit starts and reads text from. It is not part of QuickKit and
+is under its own licence: see `bin/ffmpeg/NOTICE.txt`. QuickKit never downloads
+anything — the binary is placed in `bin\ffmpeg` on the machine that builds the
+extension (`scripts\fetch-ffmpeg.ps1`), and the panel also accepts an FFmpeg
+already on PATH or one you pick yourself. If none is found the tab says which
+places it looked in.
+
+---
+
 ## Requirements
 
 - Windows 10 or 11. Built and checked on Windows 11.
 - After Effects **22.0 or newer**, or Premiere Pro **22.0 or newer**.
   Built against After Effects 26.5 and Premiere Pro 26.0.2.
 - No admin rights. Everything installs for your Windows user only.
+- The Silence tab needs an `ffmpeg.exe`. One is bundled by
+  `scripts\fetch-ffmpeg.ps1` at build time; an FFmpeg already on PATH also
+  works. The other tabs do not need it.
 
 ---
 
@@ -204,8 +246,20 @@ exact `reg delete` command if you want to remove them yourself.
 
 ### "Available in Premiere Pro" or "Available in After Effects"
 That is by design. Anchor, Presets, Text, Easing and Layers use After Effects
-features; Silence will work on Premiere sequences. The tab stays visible so the
-panel looks the same in both apps.
+features; Silence working on Premiere sequences is the other way round. The tab
+stays visible so the panel looks the same in both apps.
+
+### The Silence tab says ffmpeg is missing
+QuickKit looked in the extension folder, `%APPDATA%\QuickKit`, `QK_FFMPEG` and
+PATH. Fix it with any one of these:
+- Reinstall with `scripts\install.bat` after running
+  `scripts\fetch-ffmpeg.ps1` (puts the binary in the extension folder).
+- Install FFmpeg for Windows (for example `winget install Gyan.FFmpeg`) and
+  reopen the panel.
+- Put an `ffmpeg.exe` path in `%APPDATA%\QuickKit\settings.json` as
+  `"ffmpegPath": "C:\\path\\to\\ffmpeg.exe"`.
+
+`bin/ffmpeg/README.txt` has the same three options with the exact commands.
 
 ### A tool says it cannot reach the app
 - The panel is open in a browser, not inside After Effects. Open it from
@@ -272,9 +326,10 @@ QuickKit/
   extension/        CEP files: manifest, panel HTML/CSS/JS
   host/             ExtendScript (quickkit.jsx)
   design/           tokens.css, DESIGN_SYSTEM.md, Inter, icons
-  scripts/          install.bat, uninstall.bat
+  bin/ffmpeg/       bundled ffmpeg.exe slot + NOTICE.txt (binary not in git)
+  scripts/          install.bat, uninstall.bat, fetch-ffmpeg.ps1
   docs/             licenses, manual test checklists, preset format
-  tests/            check-static.js, host-logic.test.js, ES3 scanner
+  tests/            check-static.js, host-logic.test.js, ffmpeg.test.js
   PROJECT_RULES.md  permanent project rules
   PROGRESS.md       living status
 ```
@@ -287,9 +342,10 @@ QuickKit/
   CSXS\manifest.xml
   index.html
   css\panel.css
-  js\panel.js, js\csinterface-lite.js
+  js\panel.js, js\csinterface-lite.js, js\ffmpeg-node.js
   design\tokens.css, design\fonts\, design\icons\
   host\quickkit.jsx
+  bin\ffmpeg\ffmpeg.exe, bin\ffmpeg\NOTICE.txt
 ```
 
 ---
@@ -299,6 +355,10 @@ QuickKit/
 - No bundler, no build step, no npm install. Plain HTML/CSS/JS plus
   ExtendScript.
 - Static checks: `node tests/check-static.js` (no dependencies).
+- Host logic tests: `node tests/host-logic.test.js` (mock After Effects and a
+  mock Premiere world; not the real apps).
+- FFmpeg tests: `node tests/ffmpeg.test.js` (runs the real binary when one is
+  present and skips the real-run checks when it is not).
 - Chrome/CEF in CEP 12 is Chromium 99, so avoid newer CSS
   (`color-mix`, `:has`, container queries).
 - `host/quickkit.jsx` runs as ExtendScript, which is ES3: no `const`, `let`,
@@ -307,11 +367,14 @@ QuickKit/
 - Manual test plans: `docs/manual-test-checklist-part1.md`,
   `docs/manual-test-checklist-part2.md`,
   `docs/manual-test-checklist-part3.md`,
-  `docs/manual-test-checklist-part4.md`.
+  `docs/manual-test-checklist-part4.md`,
+  `docs/manual-test-checklist-part5.md`.
 
 ---
 
 ## License
 
 [MIT](LICENSE) © 34rns. Bundled Inter is under the SIL Open Font License 1.1 —
-see `docs/ASSET_LICENSES.md`.
+see `docs/ASSET_LICENSES.md`. The bundled FFmpeg build is a separate program
+under its own licence (GPL or LGPL, depending on the build) — see
+`bin/ffmpeg/NOTICE.txt`.

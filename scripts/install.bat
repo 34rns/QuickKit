@@ -51,6 +51,17 @@ xcopy "%ROOT%\design\fonts\*.woff2" "%DEST%\design\fonts\" /I /Y /Q >nul
 xcopy "%ROOT%\design\fonts\OFL.txt" "%DEST%\design\fonts\" /I /Y /Q >nul
 xcopy "%ROOT%\design\icons\*.js" "%DEST%\design\icons\" /I /Y /Q >nul
 xcopy "%ROOT%\host\*.jsx" "%DEST%\host\" /I /Y /Q >nul
+if exist "%ROOT%\bin\ffmpeg\ffmpeg.exe" (
+  mkdir "%DEST%\bin\ffmpeg" 2>nul
+  copy /y "%ROOT%\bin\ffmpeg\ffmpeg.exe" "%DEST%\bin\ffmpeg\" >nul
+  if exist "%ROOT%\bin\ffmpeg\ffprobe.exe" copy /y "%ROOT%\bin\ffmpeg\ffprobe.exe" "%DEST%\bin\ffmpeg\" >nul
+  copy /y "%ROOT%\bin\ffmpeg\NOTICE.txt" "%DEST%\bin\ffmpeg\" >nul
+  if exist "%ROOT%\bin\ffmpeg\VERSION.txt" copy /y "%ROOT%\bin\ffmpeg\VERSION.txt" "%DEST%\bin\ffmpeg\" >nul
+  echo   [OK]   Bundled ffmpeg copied - the Silence tab will use it.
+) else (
+  echo   [i]    No bin\ffmpeg\ffmpeg.exe to bundle. The Silence tab will look
+  echo          for ffmpeg on PATH instead. See bin\ffmpeg\README.txt.
+)
 
 echo  [4/4] Checking the installed files...
 if not exist "%DEST%\CSXS\manifest.xml" set "MISSING=1"
@@ -60,6 +71,7 @@ if not exist "%DEST%\design\tokens.css" set "MISSING=1"
 if not exist "%DEST%\design\fonts\inter-latin-400-normal.woff2" set "MISSING=1"
 if not exist "%DEST%\design\icons\icons.js" set "MISSING=1"
 if not exist "%DEST%\host\quickkit.jsx" set "MISSING=1"
+if not exist "%DEST%\js\ffmpeg-node.js" set "MISSING=1"
 fc /b "%ROOT%\host\quickkit.jsx" "%DEST%\host\quickkit.jsx" >nul 2>&1
 if errorlevel 1 set "MISSING=1"
 fc /b "%ROOT%\extension\js\panel.js" "%DEST%\js\panel.js" >nul 2>&1

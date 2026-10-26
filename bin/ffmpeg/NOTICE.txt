@@ -1,0 +1,75 @@
+QuickKit — bundled FFmpeg notice
+================================
+
+QuickKit's Silence tool calls an FFmpeg executable. FFmpeg is not part of
+QuickKit and is not written by the QuickKit authors. It is bundled as an
+unmodified, separate command-line program that QuickKit runs and reads text
+output from. No FFmpeg source code is linked into QuickKit, and QuickKit's own
+code is not derived from FFmpeg.
+
+Which build is bundled
+----------------------
+Whatever `scripts/fetch-ffmpeg.ps1` copied into this folder. The exact build
+string is recorded next to the binary in `VERSION.txt` (written by the fetch
+script). Builds differ:
+
+  * `ffmpeg-gpl` builds are licensed under the GNU General Public License
+    version 2 or later (GPLv2+), because they include GPL-only components
+    such as libx264 and libx265.
+  * `ffmpeg-lgpl` builds are licensed under the GNU Lesser General Public
+    License version 2.1 or later (LGPLv2.1+).
+
+Read `VERSION.txt` to see which one you have. A build without a GPL-only
+component is LGPL and is the lighter obligation; a GPL build is still fine to
+redistribute as long as this notice, the licence text and the corresponding
+source offer travel with it.
+
+Required notices (GPL build)
+----------------------------
+  FFmpeg is free software: you can redistribute it and/or modify it under the
+  terms of the GNU General Public License as published by the Free Software
+  Foundation, either version 2 of the License, or (at your option) any later
+  version.
+
+  FFmpeg is distributed in the hope that it will be useful, but WITHOUT ANY
+  WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+  FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+  details.
+
+Required notices (LGPL build)
+-----------------------------
+  FFmpeg is free software: you can redistribute it and/or modify it under the
+  terms of the GNU Lesser General Public License as published by the Free
+  Software Foundation, either version 2.1 of the License, or (at your option)
+  any later version.
+
+  FFmpeg is distributed in the hope that it will be useful, but WITHOUT ANY
+  WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+  FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public License for more
+  details.
+
+Licence text and source
+-----------------------
+  * Licence overview: https://ffmpeg.org/legal.html
+  * GPLv2 text:      https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+  * GPLv3 text:      https://www.gnu.org/licenses/gpl-3.0.html
+  * LGPLv2.1 text:   https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+  * FFmpeg source:   https://ffmpeg.org/download.html
+
+If you redistribute QuickKit with a GPL FFmpeg build, ship the full licence
+text and a written offer (or a download link) for the corresponding FFmpeg
+source for the exact build recorded in `VERSION.txt`. The safest option for a
+public release is an LGPL build: run `scripts/fetch-ffmpeg.ps1 -From <path to
+an LGPL ffmpeg.exe>`.
+
+Attribution in the UI
+---------------------
+The QuickKit Silence tab shows the detected FFmpeg version and states that
+FFmpeg is used under its own licence. That line is not optional; it is how the
+user learns where the audio analysis comes from.
+
+No network at runtime
+---------------------
+QuickKit never downloads FFmpeg. The binary is placed in this folder on the
+machine that builds the extension, and the panel only ever starts that local
+file.

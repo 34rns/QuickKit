@@ -433,6 +433,125 @@ if (!bundleVersion || !panelVersion) {
 });
 if (exists("tests/host-logic.test.js")) pass("host logic test suite is present");
 
+/* 17. silence cutter panel (Part 5) */
+var silencePanel = /<section[^>]*id="qk-panel-silence"[\s\S]*?<\/section>/.exec(html);
+if (!silencePanel) {
+  fail("silence panel #qk-panel-silence is missing");
+} else {
+  pass("silence panel is present");
+
+  var silenceTab = /id:\s*"silence",[\s\S]{0,240}?panelId:\s*"silence"/.exec(panelJs);
+  if (!silenceTab) fail("panel.js silence tab is not linked to panelId \"silence\"");
+  else pass("silence tab is linked to its panel element");
+
+  if (panelJs.indexOf("if (id === \"silence\") silenceOnShow();") === -1) {
+    fail("selectTab never calls silenceOnShow()");
+  } else {
+    pass("selectTab refreshes the silence panel when the tab opens");
+  }
+
+  if (!/bindSilence\(\);/.test(panelJs)) fail("boot() never calls bindSilence()");
+  else pass("boot() binds the silence controls");
+
+  ["qk-silence-mode-delete", "qk-silence-mode-mark", "qk-silence-mode-mute"].forEach(function (id) {
+    if (silencePanel[0].indexOf('id="' + id + '"') === -1) fail("silence panel is missing mode " + id);
+  });
+  if (["qk-silence-mode-delete", "qk-silence-mode-mark", "qk-silence-mode-mute"].every(function (id) {
+    return silencePanel[0].indexOf('id="' + id + '"') !== -1;
+  })) {
+    pass("silence panel offers delete, mark and mute modes");
+  }
+
+  if (silencePanel[0].indexOf('id="qk-silence-wave"') === -1) fail("silence panel has no waveform canvas");
+  else pass("silence panel has a waveform preview");
+
+  if (silencePanel[0].indexOf('id="qk-silence-cancel"') === -1) fail("silence panel has no cancel button");
+  else pass("silence panel has a cancel button");
+}
+
+/* 18. every silence id used by the panel exists in index.html */
+var silenceIdsUsed = {};
+panelJs.replace(/(qk-silence-[a-z0-9-]+)/g, function (_, id) {
+  if (id.charAt(id.length - 1) !== "-") silenceIdsUsed[id] = true;
+  return _;
+});
+var silenceIdsMissing = Object.keys(silenceIdsUsed).filter(function (id) {
+  return html.indexOf('id="' + id + '"') === -1;
+});
+if (silenceIdsMissing.length) fail("panel.js uses silence ids that index.html does not have: " + silenceIdsMissing.join(", "));
+else pass("all " + Object.keys(silenceIdsUsed).length + " silence ids used by the panel exist in index.html");
+
+/* 19. the Node side is a required module, never a script tag */
+if (!exists("extension/js/ffmpeg-node.js")) {
+  fail("extension/js/ffmpeg-node.js is missing");
+} else {
+  pass("ffmpeg-node.js is present");
+
+  var nodeCheck = 0;
+  try {
+    execFileSync(process.execPath, ["--check", path.join(ROOT, "extension/js/ffmpeg-node.js")], { stdio: "pipe" });
+  } catch (eCheck) {
+    nodeCheck = 1;
+  }
+  if (nodeCheck) fail("extension/js/ffmpeg-node.js does not parse");
+  else pass("extension/js/ffmpeg-node.js parses");
+
+  if (html.indexOf("ffmpeg-node.js") !== -1) fail("index.html loads ffmpeg-node.js; it must only be require()d in CEP");
+  else pass("ffmpeg-node.js is not loaded as a page script");
+
+  if (panelJs.indexOf("ffmpeg-node.js") === -1) fail("panel.js never requires ffmpeg-node.js");
+  else pass("panel.js requires ffmpeg-node.js");
+
+  if (panelJs.indexOf("child_process") !== -1) fail("panel.js must not start processes itself; that belongs in ffmpeg-node.js");
+  else pass("process handling stays inside ffmpeg-node.js");
+
+  if (panelJs.indexOf("require(") === -1) fail("panel.js never calls require, so the module can never load");
+  else pass("panel.js loads the Node module with require()");
+}
+
+/* 20. CEP is told to provide Node, and Premiere is a listed host */
+if (manifest.indexOf("<Parameter>--enable-nodejs</Parameter>") === -1) {
+  fail("manifest.xml does not pass --enable-nodejs, so require() fails inside CEP");
+} else if (manifest.indexOf("<Parameter>--mixed-context</Parameter>") === -1) {
+  fail("manifest.xml does not pass --mixed-context");
+} else {
+  pass("manifest.xml enables Node for the panel");
+}
+if (manifest.indexOf('<Host Name="PPRO"') === -1) fail("manifest.xml no longer lists Premiere Pro (PPRO)");
+else pass("manifest.xml lists Premiere Pro");
+
+/* 21. bundled ffmpeg notice and install path */
+if (!exists("bin/ffmpeg/NOTICE.txt")) {
+  fail("bin/ffmpeg/NOTICE.txt is missing; the bundled binary has no licence notice");
+} else {
+  var notice = read("bin/ffmpeg/NOTICE.txt");
+  if (!/GNU General Public License/.test(notice) || !/GNU Lesser General Public License/.test(notice)) {
+    fail("bin/ffmpeg/NOTICE.txt does not cover both the GPL and LGPL builds");
+  } else if (notice.indexOf("ffmpeg.org") === -1) {
+    fail("bin/ffmpeg/NOTICE.txt does not point at the FFmpeg source");
+  } else {
+    pass("bin/ffmpeg/NOTICE.txt covers GPL, LGPL and the source offer");
+  }
+}
+var ignore = exists(".gitignore") ? read(".gitignore") : "";
+if (ignore.indexOf("bin/ffmpeg/*.exe") === -1) fail(".gitignore does not exclude the ffmpeg binary");
+else pass(".gitignore keeps the ffmpeg binary out of the repository");
+
+if (exists("scripts/fetch-ffmpeg.ps1")) pass("scripts/fetch-ffmpeg.ps1 is present");
+else fail("scripts/fetch-ffmpeg.ps1 is missing");
+
+/* 22. silence entry points exist in the host */
+["qkSilenceTargets", "qkSilenceSegments", "qkSilenceMarkers", "qkSilenceClearMarkers", "qkSilenceApply"].forEach(function (name) {
+  if (!definedFns[name]) fail("host is missing " + name + "()");
+});
+if (["qkSilenceTargets", "qkSilenceSegments", "qkSilenceMarkers", "qkSilenceClearMarkers", "qkSilenceApply"].every(function (name) {
+  return definedFns[name];
+})) {
+  pass("host defines all 5 silence entry points");
+}
+
+if (exists("tests/ffmpeg.test.js")) pass("ffmpeg test suite is present");
+else fail("tests/ffmpeg.test.js is missing");
 /* report */
 passes.forEach(function (message) { console.log("PASS  " + message); });
 skips.forEach(function (message) { console.log("SKIP  " + message); });

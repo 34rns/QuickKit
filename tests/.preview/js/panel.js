@@ -4,7 +4,7 @@
 (function (window, document) {
   "use strict";
 
-  var VERSION = "0.4.0";
+  var VERSION = "0.5.0";
   var WELCOME_KEY = "qk.welcome.v1";
   var HOST_TEST_TIMEOUT = 8000;
   var ACTION_TIMEOUT = 15000;
@@ -118,6 +118,7 @@
       label: "Silence",
       icon: "silence",
       host: "PPRO",
+      panelId: "silence",
       body: "Find silent gaps and cut them out of a sequence.",
       hostNote: "Silence detection runs on Premiere Pro sequences."
     },
@@ -253,7 +254,8 @@
       presets: document.getElementById("qk-panel-presets"),
       text: document.getElementById("qk-panel-text"),
       layers: document.getElementById("qk-panel-layers"),
-      easing: document.getElementById("qk-panel-easing")
+      easing: document.getElementById("qk-panel-easing"),
+      silence: document.getElementById("qk-panel-silence")
     };
 
     if (els.version) els.version.textContent = "v" + VERSION;
@@ -271,6 +273,7 @@
     setEasingPreset("easy");
     setTextPreset("fade", false);
     bindPresets();
+    bindSilence();
     renderPresets();
   }
 
@@ -374,6 +377,7 @@
 
     renderContent();
     if (id === "text") scheduleTextPreview();
+    if (id === "silence") silenceOnShow();
     if (id === "presets") {
       if (state.hosted && !state.presetLoaded) loadPresets();
       else renderPresets();
@@ -2205,6 +2209,829 @@
     window.addEventListener("resize", hide);
   }
 
+
+  /* ---------- silence cutter (Premiere, Part 5) ---------- */
+
+  var SILENCE_COLUMNS = 600;
+  var SILENCE_COLOR_INDEX = 4;
+
+  var silence = {
+    module: null,
+    moduleError: "",
+    ffmpeg: null,
+    ffmpegError: "",
+    locating: false,
+    status: "idle",
+    job: null,
+    clips: [],
+    sequence: null,
+    notes: [],
+    segments: [],
+    peaks: null,
+    duration: 0,
+    error: "",
+    message: ""
+  };
+
+  function silenceNode() {
+    try {
+      return (
+        typeof require === "function" &&
+        typeof process !== "undefined" &&
+        !!process.versions &&
+        !!process.versions.node
+      );
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /* panel.js runs inside CEP with Node enabled; in a browser preview require is
+     missing and the tab says so instead of failing. */
+  function silenceLoadModule() {
+    if (silence.module) return silence.module;
+    if (silence.moduleError) return null;
+    if (!silenceNode()) {
+      silence.moduleError =
+        "Node is not available in this panel, so FFmpeg cannot start. Open QuickKit from Window > Extensions inside Premiere Pro.";
+      return null;
+    }
+
+    var bridge = window.CSInterfaceLite;
+    var root = bridge && bridge.getSystemPath ? String(bridge.getSystemPath("extension") || "") : "";
+    var path;
+    try {
+      path = require("path");
+    } catch (ePath) {
+      path = null;
+    }
+
+    try {
+      root = root.replace(/^file:\/\/\//i, "").replace(/^file:\/\//i, "");
+      try {
+        root = decodeURIComponent(root);
+      } catch (eDecode) {}
+      var file = root && path ? path.join(root, "js", "ffmpeg-node.js") : "./js/ffmpeg-node.js";
+      silence.module = require(file);
+      return silence.module;
+    } catch (eLoad) {
+      silence.moduleError = "Could not load the FFmpeg helper: " + (eLoad && eLoad.message ? eLoad.message : eLoad);
+      return null;
+    }
+  }
+
+  function silenceSettingsFile() {
+    var appData = "";
+    try {
+      appData = String(process.env.APPDATA || "");
+    } catch (e) {
+      appData = "";
+    }
+    if (!appData) return "";
+    return appData + "\\QuickKit\\settings.json";
+  }
+
+  function silenceChip(text, kind) {
+    var chip = document.getElementById("qk-silence-ffmpeg-state");
+    if (!chip) return;
+    chip.textContent = text;
+    chip.className = "qk-chip" + (kind ? " is-" + kind : "");
+  }
+
+  function silenceStatusText(text) {
+    var line = document.getElementById("qk-silence-ffmpeg");
+    if (line) line.textContent = text;
+  }
+
+  function silenceLocate(then) {
+    if (silence.locating) return;
+    var mod = silenceLoadModule();
+    if (!mod) {
+      silenceChip("ffmpeg unavailable", "error");
+      silenceStatusText(silence.moduleError);
+      if (then) then(false);
+      return;
+    }
+
+    silence.locating = true;
+    silenceChip("Looking for ffmpeg", "");
+    silenceStatusText("Checking the extension folder, %APPDATA%\QuickKit and PATH…");
+
+    var bridge = window.CSInterfaceLite;
+    var extensionDir = bridge && bridge.getSystemPath ? String(bridge.getSystemPath("extension") || "") : "";
+    var saved = "";
+    var settings = silenceSettingsFile();
+    try {
+      var stored = settings ? mod.loadSetting(settings) : null;
+      saved = stored && stored.ffmpegPath ? String(stored.ffmpegPath) : "";
+    } catch (eSettings) {
+      saved = "";
+    }
+
+    mod.locate({ extensionDir: extensionDir, savedPath: saved }, function (error, found) {
+      silence.locating = false;
+
+      if (error) {
+        silence.ffmpeg = null;
+        silence.ffmpegError = error.message;
+        silenceChip("ffmpeg missing", "error");
+        var tried = error.tried || [];
+        silenceStatusText(
+          error.message + " Places checked: " + tried.length + "."
+        );
+        if (then) then(false);
+        return;
+      }
+
+      silence.ffmpeg = found;
+      silence.ffmpegError = "";
+      silenceChip("ffmpeg ready" + (found.license && found.license !== "unknown" ? " · " + found.license : ""), "ok");
+      silenceStatusText(
+        found.version + " — from the " + found.source + " location. Audio analysis by FFmpeg, used under its own licence."
+      );
+      if (then) then(true);
+    });
+  }
+
+  function silenceChooseFfmpeg() {
+    if (!silenceNode()) {
+      showMessage("error", "Picking a file needs the panel to run inside Premiere Pro.");
+      return;
+    }
+    var cep = window.__adobe_cep__;
+    if (!cep || typeof cep.invokeSync !== "function") {
+      showMessage("error", "This panel cannot open a file dialog. Run scripts\\fetch-ffmpeg.ps1 instead.");
+      return;
+    }
+
+    var chosen = "";
+    try {
+      var result = cep.invokeSync("browseFile", JSON.stringify({ mode: "openFile", filters: ["exe"] }));
+      var parsed = result ? JSON.parse(String(result)) : null;
+      if (parsed && parsed.filePaths && parsed.filePaths.length) chosen = String(parsed.filePaths[0]);
+    } catch (eBrowse) {
+      chosen = "";
+    }
+
+    if (!chosen) {
+      showMessage("error", "No file was picked. Run scripts\\fetch-ffmpeg.ps1, or leave ffmpeg on PATH.");
+      return;
+    }
+
+    var mod = silenceLoadModule();
+    var settings = silenceSettingsFile();
+    if (mod && settings) {
+      try {
+        var current = mod.loadSetting(settings) || {};
+        current.ffmpegPath = chosen;
+        mod.saveSetting(settings, current);
+      } catch (eSave) {}
+    }
+    silence.ffmpeg = null;
+    silenceLocate();
+  }
+
+  function silenceScope() {
+    var field = document.getElementById("qk-silence-scope");
+    return field ? String(field.value || "sequence") : "sequence";
+  }
+
+  function silenceOptions() {
+    var threshold = fieldValue("qk-silence-threshold") || "-35";
+    return {
+      noise: Number(threshold),
+      minSilence: Number(fieldValue("qk-silence-min") || "0.5"),
+      padBefore: Number(fieldValue("qk-silence-pad-before") || "0"),
+      padAfter: Number(fieldValue("qk-silence-pad-after") || "0"),
+      breaths: !!document.getElementById("qk-silence-breaths").checked,
+      breathMax: Number(fieldValue("qk-silence-breath-max") || "0.25")
+    };
+  }
+
+  function silenceHostCall(script, done) {
+    var bridge = window.CSInterfaceLite;
+    if (!bridge || !bridge.isHosted) {
+      done({ ok: false, error: "QuickKit is not connected to Premiere Pro. Open the panel from Window > Extensions." });
+      return;
+    }
+    bridge.evalScript(script, function (raw) {
+      var data = null;
+      try {
+        data = JSON.parse(String(raw));
+      } catch (eParse) {
+        data = null;
+      }
+      if (!data) {
+        done({ ok: false, error: "Premiere did not answer in a way QuickKit could read. Reopen the panel and try again." });
+        return;
+      }
+      done(data);
+    });
+  }
+
+  function silenceSetBusy(busy) {
+    ["qk-silence-scan", "qk-silence-apply", "qk-silence-markers", "qk-silence-clear-markers", "qk-silence-find"].forEach(function (id) {
+      var node = document.getElementById(id);
+      if (node) node.disabled = busy;
+    });
+    var cancel = document.getElementById("qk-silence-cancel");
+    if (cancel) cancel.hidden = !busy;
+  }
+
+  function silenceProgress(ratio, text) {
+    var wrap = document.getElementById("qk-silence-progress-wrap");
+    var bar = document.getElementById("qk-silence-progress");
+    var label = document.getElementById("qk-silence-progress-text");
+    if (wrap) wrap.hidden = false;
+    if (bar) bar.style.width = Math.max(0, Math.min(100, Math.round(ratio * 100))) + "%";
+    if (label) label.textContent = text;
+  }
+
+  function silenceFail(message) {
+    silence.status = "error";
+    silence.error = message;
+    silence.job = null;
+    silenceSetBusy(false);
+    var wrap = document.getElementById("qk-silence-progress-wrap");
+    if (wrap) wrap.hidden = true;
+    showMessage("error", message);
+    setStatus("Silence: nothing changed");
+    silenceRender();
+  }
+
+  function silenceScan() {
+    if (silence.status === "scanning") return;
+
+    if (!state.hosted || state.hostId !== "PPRO") {
+      showMessage("error", "The Silence cutter runs in Premiere Pro. Open the panel from Window > Extensions inside Premiere Pro.");
+      return;
+    }
+
+    if (!silenceLoadModule()) {
+      showMessage("error", silence.moduleError);
+      return;
+    }
+
+    if (!silence.ffmpeg) {
+      silenceLocate(function (ok) {
+        if (ok) silenceScan();
+      });
+      return;
+    }
+
+    silence.status = "scanning";
+    silence.clips = [];
+    silence.sequence = null;
+    silence.notes = [];
+    silence.segments = [];
+    silence.peaks = null;
+    silence.duration = 0;
+    silence.error = "";
+    silence.message = "";
+    silenceSetBusy(true);
+    silenceRender();
+    silenceProgress(0.02, "Asking Premiere which audio to analyse…");
+
+    silenceHostCall("qkSilenceTargets(" + qkQuote(silenceScope()) + ")", function (data) {
+      if (silence.status !== "scanning") return;
+      if (!data.ok) {
+        silenceFail(data.error || "Premiere could not read the sequence.");
+        return;
+      }
+      silence.clips = data.clips || [];
+      silence.sequence = data.sequence || null;
+      silence.notes = data.notes || [];
+      silence.duration = silence.sequence && silence.sequence.end ? Number(silence.sequence.end) : 0;
+
+      if (!silence.clips.length) {
+        silenceFail("This sequence has no audio clips QuickKit can read. Check that the clips are not offline.");
+        return;
+      }
+      silenceAnalyse(0, {});
+    });
+  }
+
+  /* One clip at a time: ffmpeg runs out of process, so the panel stays live and
+     Cancel can kill the child between two clips or during one. */
+  function silenceAnalyse(index, cache) {
+    if (silence.status !== "scanning") return;
+
+    if (index >= silence.clips.length) {
+      silenceMapResults(cache);
+      return;
+    }
+
+    var mod = silence.module;
+    var clip = silence.clips[index];
+    var key = String(clip.path).toLowerCase();
+    var share = 1 / silence.clips.length;
+    var base = index * share;
+    var options = silenceOptions();
+
+    function next() {
+      window.setTimeout(function () {
+        silenceAnalyse(index + 1, cache);
+      }, 0);
+    }
+
+    if (cache[key]) {
+      silenceProgress(base + share, "Clip " + (index + 1) + " of " + silence.clips.length + " — reused an earlier result");
+      next();
+      return;
+    }
+
+    silenceProgress(base + share * 0.05, "Clip " + (index + 1) + " of " + silence.clips.length + " — " + clip.name);
+
+    mod.probe(silence.ffmpeg.path, clip.path, function (probeError, info) {
+      if (silence.status !== "scanning") return;
+
+      if (probeError) {
+        cache[key] = {
+          silences: [],
+          peaks: null,
+          problem: probeError.message
+        };
+        next();
+        return;
+      }
+
+      if (!info.hasAudio) {
+        cache[key] = { silences: [], peaks: null, problem: "no audio stream" };
+        next();
+        return;
+      }
+
+      silence.job = mod.detect(
+        silence.ffmpeg.path,
+        clip.path,
+        options,
+        {
+          onProgress: function (seconds, ratio) {
+            var part = ratio >= 0 ? ratio : 0;
+            silenceProgress(
+              base + share * (0.1 + part * 0.7),
+              "Analysing " + clip.name + " — " + Math.round(part * 100) + "%"
+            );
+          },
+          onDone: function (error, result) {
+            silence.job = null;
+            if (silence.status !== "scanning") return;
+
+            if (error && error.code === "cancelled") return;
+            if (error) {
+              cache[key] = { silences: [], peaks: null, problem: error.message };
+              next();
+              return;
+            }
+
+            var span = Math.max(0.05, Number(clip.end) - Number(clip.start));
+            var columns = Math.max(8, Math.min(SILENCE_COLUMNS, Math.round((SILENCE_COLUMNS * span) / Math.max(1, silence.duration))));
+
+            silence.job = mod.peaks(
+              silence.ffmpeg.path,
+              clip.path,
+              {
+                start: Number(clip.inPoint) || 0,
+                duration: span,
+                columns: columns
+              },
+              {
+                onDone: function (peakError, wave) {
+                  silence.job = null;
+                  if (silence.status !== "scanning") return;
+                  cache[key] = {
+                    silences: result.segments,
+                    peaks: peakError ? null : wave.peaks,
+                    columns: columns,
+                    problem: ""
+                  };
+                  next();
+                }
+              }
+            );
+          }
+        },
+        info.duration
+      );
+    });
+  }
+
+  function silenceMapResults(cache) {
+    var problems = [];
+    var payloadClips = silence.clips.map(function (clip) {
+      var hit = cache[String(clip.path).toLowerCase()];
+      if (!hit) {
+        problems.push(clip.name + " was not analysed");
+        return { id: clip.id, silences: [] };
+      }
+      if (hit.problem) problems.push(clip.name + ": " + hit.problem);
+      return { id: clip.id, silences: hit.silences || [] };
+    });
+
+    silence.composePeaks(cache);
+    var options = silenceOptions();
+
+    var payload = {
+      clips: payloadClips,
+      padBefore: options.padBefore,
+      padAfter: options.padAfter,
+      minLength: options.minSilence
+    };
+
+    silenceProgress(0.96, "Mapping the gaps onto the timeline…");
+
+    silenceHostCall("qkSilenceSegments(" + qkQuote(JSON.stringify(payload)) + ")", function (data) {
+      if (silence.status !== "scanning") return;
+
+      if (!data.ok) {
+        silenceFail(data.error || "The gaps could not be mapped onto the timeline.");
+        return;
+      }
+
+      silence.segments = (data.segments || []).map(function (segment) {
+        return { start: Number(segment.start), end: Number(segment.end), on: true };
+      });
+      silence.message = data.message || "";
+      silence.status = "ready";
+      silenceSetBusy(false);
+
+      if (problems.length) {
+        silence.notes = silence.notes.concat(problems);
+      }
+
+      var wrap = document.getElementById("qk-silence-progress-wrap");
+      if (wrap) wrap.hidden = Boolean(silence.segments.length) === false && !silence.message;
+
+      silenceProgress(1, "Done — " + (silence.message || "no gaps found"));
+      window.setTimeout(function () {
+        var track = document.getElementById("qk-silence-progress-wrap");
+        if (track) track.hidden = true;
+      }, 1200);
+
+      silenceRender();
+      setStatus("Silence: " + (silence.message || "scan finished"));
+      if (silence.segments.length) silenceSendMarkers(false);
+    });
+  }
+
+  function silenceComposePeaks(cache) {
+    if (!silence.duration) {
+      silence.peaks = null;
+      return;
+    }
+
+    var columns = SILENCE_COLUMNS;
+    var out = new Float32Array(columns);
+    var any = false;
+
+    silence.clips.forEach(function (clip) {
+      var hit = cache[String(clip.path).toLowerCase()];
+      if (!hit || !hit.peaks || !hit.peaks.length) return;
+      any = true;
+      var clipStart = Number(clip.start);
+      var clipEnd = Number(clip.end);
+      var count = hit.peaks.length;
+
+      for (var i = 0; i < count; i++) {
+        var time = clipStart + ((clipEnd - clipStart) * i) / count;
+        var column = Math.round((time / silence.duration) * (columns - 1));
+        if (column < 0) column = 0;
+        if (column >= columns) column = columns - 1;
+        if (hit.peaks[i] > out[column]) out[column] = hit.peaks[i];
+      }
+    });
+
+    silence.peaks = any ? out : null;
+  }
+
+  function silenceCancel() {
+    if (silence.status !== "scanning") return;
+    silence.status = "idle";
+    if (silence.job) {
+      try {
+        silence.job.cancel();
+      } catch (e) {}
+      silence.job = null;
+    }
+    silenceSetBusy(false);
+    var wrap = document.getElementById("qk-silence-progress-wrap");
+    if (wrap) wrap.hidden = true;
+    showMessage("error", "Scan stopped. Nothing was changed in the sequence.");
+    setStatus("Silence: scan cancelled");
+    silenceRender();
+  }
+
+  function silenceMode() {
+    var chosen = "delete";
+    ["delete", "mark", "mute"].forEach(function (mode) {
+      var field = document.getElementById("qk-silence-mode-" + mode);
+      if (field && field.checked) chosen = mode;
+    });
+    return chosen;
+  }
+
+  function silenceTicked() {
+    return silence.segments.filter(function (segment) {
+      return segment.on;
+    });
+  }
+
+  function silencePayload() {
+    var ticked = silenceTicked();
+    return {
+      mode: silenceMode(),
+      segments: ticked.map(function (segment) {
+        return { start: segment.start, end: segment.end };
+      }),
+      label: "QuickKit silence",
+      colorIndex: SILENCE_COLOR_INDEX
+    };
+  }
+
+  function silenceSendMarkers(quiet) {
+    var ticked = silenceTicked();
+    if (!ticked.length) {
+      if (!quiet) showMessage("error", "Nothing is ticked, so no markers were added.");
+      return;
+    }
+
+    var payload = silencePayload();
+    payload.mode = "mark";
+
+    silenceHostCall("qkSilenceApply(" + qkQuote(JSON.stringify(payload)) + ")", function (data) {
+      if (!data.ok) {
+        if (!quiet) showMessage("error", data.error || "Premiere refused to add the markers.");
+        return;
+      }
+      if (!quiet) {
+        showMessage("ok", data.message);
+        setStatus("Silence: markers added");
+      }
+    });
+  }
+
+  function silenceApply() {
+    if (silence.status === "scanning") return;
+
+    if (!silenceTicked().length) {
+      showMessage("error", "No gap is ticked. Switch at least one on before applying.");
+      return;
+    }
+
+    var payload = silencePayload();
+    silenceSetBusy(true);
+    setStatus("Silence: applying…");
+
+    silenceHostCall("qkSilenceApply(" + qkQuote(JSON.stringify(payload)) + ")", function (data) {
+      silenceSetBusy(false);
+      if (!data.ok) {
+        showMessage("error", data.error || "Premiere refused the edit. Nothing was changed after that point.");
+        setStatus("Silence: not applied");
+        return;
+      }
+      showMessage("ok", data.message);
+      setStatus("Silence: applied");
+      rememberUndoHint();
+      silence.segments = [];
+      silence.peaks = null;
+      silence.status = "idle";
+      silenceRender();
+    });
+  }
+
+  function silenceClearMarkers() {
+    silenceHostCall("qkSilenceClearMarkers()", function (data) {
+      if (!data.ok) {
+        showMessage("error", data.error || "Premiere refused to remove the markers.");
+        return;
+      }
+      showMessage("ok", data.message);
+      setStatus("Silence: markers cleared");
+    });
+  }
+
+  function silenceTime(seconds) {
+    var value = Number(seconds);
+    if (!isFinite(value) || value < 0) value = 0;
+    var minutes = Math.floor(value / 60);
+    var rest = value - minutes * 60;
+    var whole = Math.floor(rest);
+    var cents = Math.round((rest - whole) * 100);
+    if (cents === 100) {
+      cents = 0;
+      whole++;
+    }
+    if (whole === 60) {
+      whole = 0;
+      minutes++;
+    }
+    return minutes + ":" + (whole < 10 ? "0" : "") + whole + "." + (cents < 10 ? "0" : "") + cents;
+  }
+
+  function silenceToken(name) {
+    try {
+      var value = window.getComputedStyle(document.documentElement).getPropertyValue(name);
+      return String(value || "").replace(/^\s+|\s+$/g, "");
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function silenceDraw() {
+    var canvas = document.getElementById("qk-silence-wave");
+    var wrap = document.getElementById("qk-silence-wave-wrap");
+    if (!canvas || !wrap) return;
+
+    if (!silence.peaks || !silence.duration) {
+      wrap.hidden = true;
+      return;
+    }
+    wrap.hidden = false;
+
+    var width = canvas.clientWidth || 300;
+    var height = canvas.clientHeight || 96;
+    var ratio = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.round(width * ratio));
+    canvas.height = Math.max(1, Math.round(height * ratio));
+
+    var ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    var bandOn = silenceToken("--qk-wave-hit-soft");
+    var bandOff = silenceToken("--qk-wave-off");
+    var waveFill = silenceToken("--qk-wave-fill");
+    var mid = height / 2;
+
+    silence.segments.forEach(function (segment) {
+      var x = (segment.start / silence.duration) * width;
+      var w = Math.max(1, ((segment.end - segment.start) / silence.duration) * width);
+      ctx.fillStyle = segment.on ? bandOn : bandOff;
+      ctx.fillRect(x, 0, w, height);
+    });
+
+    ctx.fillStyle = waveFill;
+    var peaks = silence.peaks;
+    var step = width / peaks.length;
+    for (var i = 0; i < peaks.length; i++) {
+      var value = peaks[i];
+      if (value <= 0.004) continue;
+      var barHeight = Math.max(1, value * (height - 4));
+      ctx.fillRect(i * step, mid - barHeight / 2, Math.max(1, step * 0.8), barHeight);
+    }
+  }
+
+  function silenceRenderList() {
+    var list = document.getElementById("qk-silence-segments");
+    if (!list) return;
+
+    list.innerHTML = "";
+    silence.segments.forEach(function (segment, index) {
+      var row = document.createElement("li");
+      row.className = "qk-seg" + (segment.on ? "" : " is-off");
+      row.setAttribute("data-seg", String(index));
+      row.setAttribute("role", "checkbox");
+      row.setAttribute("aria-checked", segment.on ? "true" : "false");
+      row.tabIndex = 0;
+
+      var dot = document.createElement("span");
+      dot.className = "qk-seg__dot";
+
+      var time = document.createElement("span");
+      time.className = "qk-seg__time";
+      time.textContent = silenceTime(segment.start) + " – " + silenceTime(segment.end);
+
+      var len = document.createElement("span");
+      len.className = "qk-seg__len";
+      len.textContent = Math.round((segment.end - segment.start) * 10) / 10 + " s";
+
+      row.appendChild(dot);
+      row.appendChild(time);
+      row.appendChild(len);
+      list.appendChild(row);
+    });
+  }
+
+  function silenceNoteText() {
+    if (silence.status === "scanning") return "Scanning. Nothing is changed until you press Apply.";
+    if (silence.status === "error") return silence.error;
+    if (!silence.segments.length) {
+      if (silence.message) return silence.message;
+      return "Scan to see the waveform and the gaps it found. Nothing is cut until you press Apply.";
+    }
+
+    var total = 0;
+    var ticked = 0;
+    var tickedTotal = 0;
+    silence.segments.forEach(function (segment) {
+      var length = segment.end - segment.start;
+      total += length;
+      if (segment.on) {
+        ticked++;
+        tickedTotal += length;
+      }
+    });
+
+    var text =
+      silence.segments.length +
+      (silence.segments.length === 1 ? " gap" : " gaps") +
+      ", " +
+      Math.round(total * 10) / 10 +
+      " s — " +
+      ticked +
+      " ticked (" +
+      Math.round(tickedTotal * 10) / 10 +
+      " s).";
+
+    if (silence.notes.length) text += " " + silence.notes.join(" ");
+    return text;
+  }
+
+  function silenceRender() {
+    var note = document.getElementById("qk-silence-note");
+    if (note) note.textContent = silenceNoteText();
+    silenceRenderList();
+    silenceDraw();
+  }
+
+  function silenceOnShow() {
+    silenceRender();
+    if (!silence.module && !silence.moduleError && state.hostId === "PPRO") {
+      silenceLocate();
+    }
+  }
+
+  function bindSilence() {
+    var threshold = document.getElementById("qk-silence-threshold");
+    var readout = document.getElementById("qk-silence-threshold-value");
+    if (threshold) {
+      var updateReadout = function () {
+        if (readout) readout.textContent = String(threshold.value) + " dB";
+      };
+      threshold.addEventListener("input", updateReadout);
+      updateReadout();
+    }
+
+    var find = document.getElementById("qk-silence-find");
+    if (find) {
+      find.addEventListener("click", function () {
+        silence.ffmpeg = null;
+        silence.moduleError = "";
+        silenceLocate();
+      });
+    }
+
+    var scan = document.getElementById("qk-silence-scan");
+    if (scan) scan.addEventListener("click", silenceScan);
+
+    var cancel = document.getElementById("qk-silence-cancel");
+    if (cancel) cancel.addEventListener("click", silenceCancel);
+
+    var markers = document.getElementById("qk-silence-markers");
+    if (markers) markers.addEventListener("click", function () {
+      silenceSendMarkers(false);
+    });
+
+    var apply = document.getElementById("qk-silence-apply");
+    if (apply) apply.addEventListener("click", silenceApply);
+
+    var clear = document.getElementById("qk-silence-clear-markers");
+    if (clear) clear.addEventListener("click", silenceClearMarkers);
+
+    var list = document.getElementById("qk-silence-segments");
+    if (list) {
+      var toggle = function (node) {
+        var index = Number(node.getAttribute("data-seg"));
+        if (!silence.segments[index]) return;
+        silence.segments[index].on = !silence.segments[index].on;
+        silenceRender();
+      };
+
+      list.addEventListener("click", function (event) {
+        var row = event.target.closest("[data-seg]");
+        if (row) toggle(row);
+      });
+
+      list.addEventListener("keydown", function (event) {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        var row = event.target.closest("[data-seg]");
+        if (!row) return;
+        event.preventDefault();
+        toggle(row);
+      });
+    }
+
+    var resizeTimer = null;
+    window.addEventListener("resize", function () {
+      if (resizeTimer) window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(function () {
+        resizeTimer = null;
+        silenceDraw();
+      }, 120);
+    });
+  }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", boot);
   } else {

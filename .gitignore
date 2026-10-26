@@ -10,6 +10,10 @@ PROJECT_RULES.md
 dist/
 .release-stage/
 
+# ffmpeg binary — fetched per machine, never committed (see bin/ffmpeg/NOTICE.txt)
+bin/ffmpeg/*.exe
+bin/ffmpeg/VERSION.txt
+
 # env files and keys
 .env
 .env.*
