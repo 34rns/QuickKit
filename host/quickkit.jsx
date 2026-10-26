@@ -5022,3 +5022,1397 @@ function qkSilenceApply(payloadJson) {
   if (out.error) return qkErr(out.error);
   return qkOk(out.message);
 }
+
+/* ============================================================
+ * Bridge (Premiere Pro <-> After Effects file handoff)
+ * ------------------------------------------------------------
+ * This is a FILE HANDOFF, not Dynamic Link. Nothing live crosses the two
+ * apps: Premiere writes a JSON file, After Effects reads it and builds a comp,
+ * After Effects renders a file, Premiere imports that file and overwrites the
+ * original position.
+ *
+ * Why a file and not Dynamic Link:
+ *   - Dynamic Link cannot be created from ExtendScript in either app.
+ *   - A file survives closing either app, and the user can see and move it.
+ *
+ * Premiere: qkBridgeSendToAe, qkBridgePlaceReturn
+ * After Effects: qkBridgeImport, qkBridgeCompInfo, qkBridgePrepareRender,
+ *                qkBridgeFinishRender
+ * Both: qkBridgeList, qkBridgeInfo
+ * ============================================================ */
+
+var QK_BRIDGE_HANDOFF = "quickkit-handoff";
+var QK_BRIDGE_RETURN = "quickkit-return";
+var QK_BRIDGE_VERSION = 1;
+var QK_BRIDGE_MAX_BYTES = 2 * 1024 * 1024;
+
+/* ---------- folders ---------- */
+
+function qkBridgeBasePath() {
+  var base = "";
+  try {
+    base = qkStr(Folder.userData.fsName);
+  } catch (eUser) {}
+  if (base === "") {
+    try {
+      base = qkStr(Folder.current.fsName);
+    } catch (eCurrent) {}
+  }
+  base = qkReplaceAll(base, "\\", "/");
+  while (base.length > 1 && base.charAt(base.length - 1) === "/") {
+    base = base.substring(0, base.length - 1);
+  }
+  if (base === "") return "";
+  return base + "/QuickKit/bridge";
+}
+
+/* pending    handoffs written by Premiere, waiting for After Effects
+   imported   handoffs After Effects has already read
+   imports    one record per comp QuickKit built, with its original position
+   renders    the files aerender writes
+   returns    renders waiting for Premiere
+   placed     returns Premiere has already inserted */
+function qkBridgeFolder(kind) {
+  var root = qkBridgeBasePath();
+  if (root === "") return "";
+  var folder = root + "/" + kind;
+  if (!qkEnsureFolder(folder)) return "";
+  return folder;
+}
+
+function qkBridgeFile(kind, name) {
+  var folder = qkBridgeFolder(kind);
+  if (folder === "") return "";
+  return folder + "/" + name;
+}
+
+function qkBridgeStamp() {
+  var now = new Date();
+  return (
+    now.getFullYear() +
+    qkPad(now.getMonth() + 1, 2) +
+    qkPad(now.getDate(), 2) + "-" +
+    qkPad(now.getHours(), 2) +
+    qkPad(now.getMinutes(), 2) +
+    qkPad(now.getSeconds(), 2) + "-" +
+    qkPad(now.getMilliseconds(), 3)
+  );
+}
+
+function qkBridgeNewId() {
+  return qkBridgeStamp();
+}
+
+/* A comp name is also used as a file name for the import record, so it has to
+   survive both. Windows forbids \ / : * ? " < > | in a name. */
+function qkBridgeSafeName(value) {
+  var text = qkStr(value);
+  var out = "";
+  var i;
+  var c;
+  for (i = 0; i < text.length; i++) {
+    c = text.charAt(i);
+    if (c === "\\" || c === "/" || c === ":" || c === "*" || c === "?" || c === "\"" || c === "<" || c === ">" || c === "|") {
+      out += "_";
+    } else if (c === "\r" || c === "\n" || c === "\t") {
+      out += " ";
+    } else {
+      out += c;
+    }
+  }
+  out = qkTrim(out);
+  while (out.length > 1 && (out.charAt(out.length - 1) === "." || out.charAt(out.length - 1) === " ")) {
+    out = out.substring(0, out.length - 1);
+  }
+  if (out === "") out = "QuickKit handoff";
+  if (out.length > 80) out = out.substring(0, 80);
+  return out;
+}
+
+function qkBridgeReadJson(path) {
+  var text = qkFileRead(path, QK_BRIDGE_MAX_BYTES);
+  if (text === null) return { error: "QuickKit could not read " + path + ". The file may be locked or was deleted." };
+  var data = null;
+  try {
+    data = qkJsonParse(text);
+  } catch (eParse) {
+    return { error: "The handoff file is damaged (" + qkErrText(eParse) + "). Send it again from the other app." };
+  }
+  if (!data || typeof data !== "object") {
+    return { error: "The handoff file does not contain a handoff. Send it again from the other app." };
+  }
+  return { data: data };
+}
+
+function qkBridgeMove(fromPath, toPath) {
+  if (fromPath === "" || toPath === "") return false;
+  if (fromPath === toPath) return true;
+  var text = qkFileRead(fromPath, QK_BRIDGE_MAX_BYTES);
+  if (text === null) return false;
+  if (!qkFileWriteSafe(toPath, text)) return false;
+  qkFileDelete(fromPath);
+  return true;
+}
+
+/* ---------- steps ---------- */
+
+/* Every bridge call answers with a list of steps. The panel draws them in
+   order, so a failure says which step stopped and why. */
+function qkBridgeStep(steps, id, label, state, detail) {
+  steps.push({ id: qkStr(id), label: qkStr(label), state: qkStr(state), detail: qkStr(detail) });
+}
+
+function qkBridgeFailed(steps) {
+  var i;
+  for (i = 0; i < steps.length; i++) {
+    if (steps[i].state === "fail") return true;
+  }
+  return false;
+}
+
+function qkBridgeReply(payload, steps) {
+  payload.ok = !qkBridgeFailed(steps);
+  payload.steps = steps;
+  return qkJsonStringify(payload);
+}
+
+/* ---------- shared helpers ---------- */
+
+function qkBridgeActiveSequence() {
+  var seq = null;
+  try {
+    seq = app.project ? app.project.activeSequence : null;
+  } catch (eProject) {}
+  if (!seq) return null;
+  try {
+    if (typeof seq.videoTracks === "undefined") return null;
+  } catch (eVideo) {
+    return null;
+  }
+  return seq;
+}
+
+function qkBridgeSequenceSize(seq) {
+  var width = 0;
+  var height = 0;
+  try {
+    width = Math.round(qkSilenceNumber(seq.frameSizeHorizontal, 0));
+  } catch (eWidth) {}
+  try {
+    height = Math.round(qkSilenceNumber(seq.frameSizeVertical, 0));
+  } catch (eHeight) {}
+  if (width <= 0) width = 1920;
+  if (height <= 0) height = 1080;
+  return { width: width, height: height };
+}
+
+/* Reads video clips first (that is what editors select); falls back to the
+   audio tracks when the sequence has no video. */
+function qkBridgeReadClips(seq, scope) {
+  var groups = [];
+  var clips = [];
+  var skipped = 0;
+  var offline = 0;
+  var g;
+  var t;
+  var i;
+
+  try {
+    groups.push({ tracks: seq.videoTracks, video: true });
+  } catch (eVideo) {}
+  try {
+    groups.push({ tracks: seq.audioTracks, video: false });
+  } catch (eAudio) {}
+
+  var ids = [];
+  if (qkStr(scope) === "selection") ids = qkSilenceSelectedNodeIds(seq);
+  var wanted = ids.length > 0;
+
+  for (g = 0; g < groups.length; g++) {
+    if (clips.length && g > 0) break; /* video clips found: stop before audio */
+    var tracks = groups[g].tracks;
+    var trackCount = 0;
+    try {
+      trackCount = tracks.numTracks;
+    } catch (eCount) {
+      trackCount = 0;
+    }
+
+    for (t = 0; t < trackCount; t++) {
+      var track = null;
+      try {
+        track = tracks[t];
+      } catch (eTrack) {}
+      if (!track) continue;
+
+      var trackName = (groups[g].video ? "V" : "A") + (t + 1);
+      try {
+        if (track.name) trackName = qkStr(track.name);
+      } catch (eName) {}
+
+      var count = 0;
+      try {
+        count = track.clips.numItems;
+      } catch (eClips) {
+        count = 0;
+      }
+
+      for (i = 0; i < count; i++) {
+        var item = null;
+        try {
+          item = track.clips[i];
+        } catch (eClip) {}
+        if (!item) continue;
+
+        if (wanted) {
+          var nodeId = "";
+          try {
+            nodeId = qkStr(item.nodeId);
+          } catch (eNode) {}
+          if (nodeId === "" || !qkInList(nodeId, ids)) continue;
+        }
+
+        var path = qkSilenceClipPath(item);
+        if (path === "" || path === "1") {
+          skipped++;
+          continue;
+        }
+
+        var start = qkSilenceNumber(item.start, 0);
+        var end = qkSilenceNumber(item.end, 0);
+        if (end <= start) {
+          skipped++;
+          continue;
+        }
+
+        var speed = qkSilenceNumber(item.speed, 1);
+        if (speed <= 0) speed = 1;
+
+        var inPoint = qkSilenceNumber(item.inPoint, 0);
+        if (inPoint < 0) inPoint = 0;
+
+        var exists = false;
+        try {
+          var media = new File(path);
+          exists = media ? !!media.exists : false;
+        } catch (eExists) {
+          exists = false;
+        }
+        if (!exists) offline++;
+
+        clips.push({
+          name: qkStr(item.name),
+          path: path,
+          track: t,
+          trackName: trackName,
+          video: groups[g].video,
+          sequenceStart: start,
+          sequenceEnd: end,
+          duration: end - start,
+          inPoint: inPoint,
+          outPoint: inPoint + (end - start) * speed,
+          speed: speed,
+          mediaExists: exists
+        });
+      }
+    }
+  }
+
+  return { clips: clips, skipped: skipped, offline: offline, wantedSelection: wanted };
+}
+
+/* ---------- Premiere: send to After Effects ---------- */
+
+function qkBridgeSendToAe(scope) {
+  var steps = [];
+  var seq = qkBridgeActiveSequence();
+
+  if (!seq) {
+    qkBridgeStep(steps, "sequence", "Read the active sequence", "fail",
+      "No open sequence. Open the sequence with the clips you want to send in Premiere Pro, then press Send again.");
+    return qkBridgeReply({ clips: 0, file: "", id: "" }, steps);
+  }
+
+  qkBridgeStep(steps, "sequence", "Read the active sequence", "ok", "Sequence: " + qkStr(seq.name));
+
+  var read = qkBridgeReadClips(seq, scope);
+  if (!read.clips.length) {
+    qkBridgeStep(steps, "clips", "Find the clips to send", "fail",
+      read.wantedSelection
+        ? "The clips you selected have no media path QuickKit can read. Select a video clip on the timeline and try again."
+        : "This sequence has no video or audio clips QuickKit can read. Add a clip, or select one on the timeline.");
+    return qkBridgeReply({ clips: 0, file: "", id: "" }, steps);
+  }
+
+  qkBridgeStep(steps, "clips", "Find the clips to send", "ok",
+    qkPlural(read.clips.length, "clip", "clips") + (read.wantedSelection ? " from the Timeline selection" : " from the whole sequence"));
+
+  if (read.offline === read.clips.length) {
+    qkBridgeStep(steps, "media", "Check the media files", "fail",
+      "Every clip is offline: the files are not where Premiere expects them. Relink the media, then send again.");
+    return qkBridgeReply({ clips: read.clips.length, file: "", id: "" }, steps);
+  }
+  if (read.offline > 0) {
+    qkBridgeStep(steps, "media", "Check the media files", "note",
+      qkPlural(read.offline, "clip is", "clips are") + " offline and will be reported when After Effects imports them.");
+  } else {
+    qkBridgeStep(steps, "media", "Check the media files", "ok",
+      qkPlural(read.clips.length, "file exists", "files exist") + " on disk.");
+  }
+
+  var folder = qkBridgeFolder("pending");
+  if (folder === "") {
+    qkBridgeStep(steps, "folder", "Create the handoff folder", "fail",
+      "QuickKit could not create %APPDATA%\\QuickKit\\bridge\\pending. Check that your Windows user can write to %APPDATA%.");
+    return qkBridgeReply({ clips: read.clips.length, file: "", id: "" }, steps);
+  }
+  qkBridgeStep(steps, "folder", "Create the handoff folder", "ok", folder);
+
+  var size = qkBridgeSequenceSize(seq);
+  var id = qkBridgeNewId();
+  var file = folder + "/" + id + ".qkhandoff";
+  var base = read.clips[0].sequenceStart;
+  var last = 0;
+  var c;
+  for (c = 0; c < read.clips.length; c++) {
+    if (read.clips[c].sequenceStart < base) base = read.clips[c].sequenceStart;
+    if (read.clips[c].sequenceEnd > last) last = read.clips[c].sequenceEnd;
+  }
+
+  var handoff = {
+    format: QK_BRIDGE_HANDOFF,
+    version: QK_BRIDGE_VERSION,
+    id: id,
+    created: qkDateText(),
+    sequence: {
+      name: qkStr(seq.name),
+      frameRate: qkSilenceFrameRate(seq),
+      width: size.width,
+      height: size.height,
+      start: base,
+      duration: last - base
+    },
+    clips: read.clips,
+    note: "Written by QuickKit in Premiere Pro. This is a file handoff, not Dynamic Link."
+  };
+
+  if (!qkFileWriteSafe(file, qkJsonStringify(handoff))) {
+    qkBridgeStep(steps, "write", "Write the handoff file", "fail",
+      "Windows refused to write " + file + ". Close the app that has it open, or check the folder permissions.");
+    return qkBridgeReply({ clips: read.clips.length, file: "", id: "" }, steps);
+  }
+  qkBridgeStep(steps, "write", "Write the handoff file", "ok", file);
+
+  qkBridgeStep(steps, "waiting", "Waiting for After Effects", "note",
+    "Now open QuickKit in After Effects, Bridge tab: the handoff is listed there. Nothing has changed in either app yet.");
+
+  return qkBridgeReply(
+    {
+      id: id,
+      file: file,
+      clips: read.clips.length,
+      clipsNote: read.skipped > 0 ? qkPlural(read.skipped, "clip was", "clips were") + " skipped because they have no media path." : "",
+      sequence: handoff.sequence,
+      summary: read.clips[0].name + (read.clips.length > 1 ? " + " + (read.clips.length - 1) + " more" : ""),
+      message:
+        "Wrote a handoff for " + qkPlural(read.clips.length, "clip", "clips") + " (" +
+        Math.round((last - base) * 100) / 100 + " s). Open the Bridge tab in After Effects to import it."
+    },
+    steps
+  );
+}
+
+/* ---------- After Effects: import a handoff ---------- */
+
+function qkBridgeUniqueCompName(name) {
+  var base = qkBridgeSafeName(name);
+  var taken = {};
+  var count = 0;
+  var i;
+
+  try {
+    count = app.project.numItems;
+  } catch (eCount) {
+    count = 0;
+  }
+  for (i = 1; i <= count; i++) {
+    var item = null;
+    try {
+      item = app.project.item(i);
+    } catch (eItem) {}
+    if (!item) continue;
+    var type = "";
+    try {
+      type = qkStr(item.typeName);
+    } catch (eType) {}
+    if (type !== "Composition") continue;
+    try {
+      taken[qkStr(item.name).toLowerCase()] = true;
+    } catch (eName) {}
+  }
+
+  if (!taken[base.toLowerCase()]) return base;
+  var n = 2;
+  while (taken[(base + " " + n).toLowerCase()]) n++;
+  return base + " " + n;
+}
+
+function qkBridgeImportFootage(path, cache) {
+  var key = qkStr(path).toLowerCase();
+  if (cache[key]) return { item: cache[key] };
+  var file = null;
+  try {
+    file = new File(path);
+  } catch (eFile) {}
+  if (!file || !file.exists) {
+    return { error: "The media file is not on disk: " + path + ". Premiere says it is linked; check the drive is connected." };
+  }
+  var options = null;
+  try {
+    options = new ImportOptions(file);
+  } catch (eOptions) {
+    return { error: "After Effects would not accept an import options object for " + path + ". Import the file by hand to check the format." };
+  }
+  var item = null;
+  try {
+    item = app.project.importFile(options);
+  } catch (eImport) {
+    return { error: "After Effects could not import " + path + ": " + qkErrText(eImport) };
+  }
+  if (!item) {
+    return { error: "After Effects imported nothing for " + path + "." };
+  }
+  cache[key] = item;
+  return { item: item };
+}
+
+function qkBridgeImport(id) {
+  var started = qkBeginUndo("QuickKit: Bridge import");
+  var steps = [];
+  var handoffId = qkStr(id);
+  var sourcePath = qkBridgeFile("pending", handoffId + ".qkhandoff");
+  var out = qkBridgeImportRun(handoffId, sourcePath, steps);
+  qkEndUndo(started);
+  return qkBridgeReply(out, steps);
+}
+
+function qkBridgeImportRun(handoffId, sourcePath, steps) {
+  var empty = { comp: null, layers: 0, id: handoffId };
+
+  if (sourcePath === "") {
+    qkBridgeStep(steps, "folder", "Find the handoff", "fail",
+      "QuickKit could not build the handoff folder path. Check that %APPDATA% is writable.");
+    return empty;
+  }
+
+  var read = qkBridgeReadJson(sourcePath);
+  if (read.error) {
+    qkBridgeStep(steps, "read", "Read the handoff file", "fail", read.error);
+    return empty;
+  }
+  var handoff = read.data;
+  qkBridgeStep(steps, "read", "Read the handoff file", "ok", qkPathName(sourcePath));
+
+  if (qkStr(handoff.format) !== QK_BRIDGE_HANDOFF) {
+    qkBridgeStep(steps, "format", "Check the handoff", "fail",
+      "That file is not a QuickKit handoff. Send the clips again from Premiere Pro.");
+    return empty;
+  }
+  var clips = qkPresetIsArray(handoff.clips) ? handoff.clips : [];
+  if (!clips.length) {
+    qkBridgeStep(steps, "format", "Check the handoff", "fail", "The handoff lists no clips. Send it again from Premiere Pro.");
+    return empty;
+  }
+  qkBridgeStep(steps, "format", "Check the handoff", "ok", qkPlural(clips.length, "clip", "clips"));
+
+  if (!app.project) {
+    qkBridgeStep(steps, "project", "Find the After Effects project", "fail",
+      "No project is open in After Effects. Open or create a project, then press Import again.");
+    return empty;
+  }
+  qkBridgeStep(steps, "project", "Find the After Effects project", "ok", qkProjectName() || "untitled project");
+
+  /* Import the footage once per file, then place each clip. */
+  var cache = {};
+  var imported = 0;
+  var missing = [];
+  var c;
+  for (c = 0; c < clips.length; c++) {
+    var got = qkBridgeImportFootage(qkStr(clips[c].path), cache);
+    if (got.error) missing.push(got.error);
+    else imported++;
+  }
+
+  if (imported === 0) {
+    qkBridgeStep(steps, "footage", "Import the footage", "fail",
+      missing.length ? missing[0] : "No footage could be imported.");
+    return empty;
+  }
+  qkBridgeStep(steps, "footage", "Import the footage",
+    missing.length ? "note" : "ok",
+    missing.length
+      ? qkPlural(imported, "file imported", "files imported") + "; " + missing[0]
+      : qkPlural(imported, "file imported", "files imported") + ".");
+  if (missing.length > 1) {
+    qkBridgeStep(steps, "footage-more", "More offline clips", "note", qkJoin(missing.slice(1)));
+  }
+
+  var seqInfo = handoff.sequence || {};
+  var width = Math.round(qkSilenceNumber(seqInfo.width, 1920)) || 1920;
+  var height = Math.round(qkSilenceNumber(seqInfo.height, 1080)) || 1080;
+  var frameRate = qkSilenceNumber(seqInfo.frameRate, 25);
+  if (frameRate <= 0) frameRate = 25;
+
+  var base = qkSilenceNumber(seqInfo.start, 0);
+  var last = base;
+  for (c = 0; c < clips.length; c++) {
+    var clipEnd = qkSilenceNumber(clips[c].sequenceEnd, base);
+    if (clipEnd > last) last = clipEnd;
+  }
+  var duration = last - base;
+  if (duration <= 0) {
+    for (c = 0; c < clips.length; c++) {
+      duration += qkSilenceNumber(clips[c].duration, 0);
+    }
+  }
+  if (duration <= 0) duration = 1;
+
+  var comp = null;
+  var compName = qkBridgeUniqueCompName(qkStr(seqInfo.name) || qkStr(clips[0].name) || "QuickKit handoff");
+  try {
+    comp = app.project.items.addComp(compName, width, height, 1, duration, frameRate);
+  } catch (eComp) {
+    qkBridgeStep(steps, "comp", "Create the composition", "fail",
+      "After Effects could not create a composition: " + qkErrText(eComp));
+    return empty;
+  }
+  if (!comp) {
+    qkBridgeStep(steps, "comp", "Create the composition", "fail", "After Effects did not return the new composition.");
+    return empty;
+  }
+  qkBridgeStep(steps, "comp", "Create the composition", "ok",
+    compName + " - " + width + "x" + height + " at " + frameRate + " fps, " + (Math.round(duration * 100) / 100) + " s");
+
+  var made = 0;
+  var layerProblems = [];
+  for (c = 0; c < clips.length; c++) {
+    var clip = clips[c];
+    var placed = qkBridgeImportFootage(qkStr(clip.path), cache);
+    if (placed.error) continue;
+
+    var offset = qkSilenceNumber(clip.sequenceStart, base) - base;
+    var clipDuration = qkSilenceNumber(clip.duration, 0);
+    var inPoint = qkSilenceNumber(clip.inPoint, 0);
+    var speed = qkSilenceNumber(clip.speed, 1);
+    if (speed <= 0) speed = 1;
+
+    var layer = null;
+    try {
+      layer = comp.layers.add(placed.item);
+    } catch (eAdd) {
+      layerProblems.push("Layer for \"" + qkStr(clip.name) + "\" could not be added: " + qkErrText(eAdd));
+      continue;
+    }
+    if (!layer) {
+      layerProblems.push("Layer for \"" + qkStr(clip.name) + "\" came back empty.");
+      continue;
+    }
+
+    /* Trim to the range Premiere actually uses, then move it to its place. */
+    try {
+      if (speed !== 1) layer.stretch = 100 / speed;
+    } catch (eStretch) {
+      layerProblems.push("Speed " + speed + "x could not be set on \"" + qkStr(clip.name) + "\"; it plays at normal speed.");
+    }
+    try {
+      layer.startTime = -inPoint + offset;
+    } catch (eStart) {}
+    try {
+      layer.inPoint = offset;
+    } catch (eIn) {}
+    try {
+      layer.outPoint = offset + clipDuration;
+    } catch (eOut) {}
+    made++;
+  }
+
+  if (made === 0) {
+    qkBridgeStep(steps, "layers", "Place the clips in the composition", "fail",
+      layerProblems.length ? layerProblems[0] : "No clip could be placed in the composition.");
+    return empty;
+  }
+  qkBridgeStep(steps, "layers", "Place the clips in the composition",
+    layerProblems.length ? "note" : "ok",
+    qkPlural(made, "layer trimmed to the used range", "layers trimmed to the used range") +
+      (layerProblems.length ? "; " + layerProblems[0] : ""));
+  if (layerProblems.length > 1) {
+    qkBridgeStep(steps, "layers-more", "More layer notes", "note", qkJoin(layerProblems.slice(1)));
+  }
+
+  /* Remember where this comp came from, so Send back knows the time and track. */
+  var record = {
+    format: "quickkit-import",
+    version: QK_BRIDGE_VERSION,
+    handoffId: handoffId,
+    comp: compName,
+    created: qkDateText(),
+    sequence: {
+      name: qkStr(seqInfo.name),
+      frameRate: frameRate,
+      width: width,
+      height: height
+    },
+    place: {
+      start: qkSilenceNumber(clips[0].sequenceStart, 0),
+      track: Math.round(qkSilenceNumber(clips[0].track, 0)),
+      trackName: qkStr(clips[0].trackName)
+    }
+  };
+  var recordPath = qkBridgeFile("imports", qkBridgeSafeName(compName).toLowerCase() + ".json");
+  if (recordPath === "" || !qkFileWriteSafe(recordPath, qkJsonStringify(record))) {
+    qkBridgeStep(steps, "record", "Remember the original position", "note",
+      "The comp was built, but its original Premiere position could not be saved. Send back will not know where to put the render.");
+  } else {
+    qkBridgeStep(steps, "record", "Remember the original position", "ok",
+      "Sequence time " + (Math.round(record.place.start * 100) / 100) + " s on " + record.place.trackName);
+  }
+
+  var archive = qkBridgeFile("imported", handoffId + ".qkhandoff");
+  if (archive && qkBridgeMove(sourcePath, archive)) {
+    qkBridgeStep(steps, "archive", "File the handoff away", "ok", "Moved to imported.");
+  } else {
+    qkBridgeStep(steps, "archive", "File the handoff away", "note",
+      "The handoff file stayed in pending, so it will be listed again. Delete it by hand if that is annoying.");
+  }
+
+  try {
+    comp.openInViewer();
+  } catch (eOpen) {}
+
+  qkBridgeStep(steps, "ready", "Ready to work", "note",
+    "Composition \"" + compName + "\" is open. When it is finished, use Send back to Premiere on this tab.");
+
+  return {
+    id: handoffId,
+    comp: {
+      name: compName,
+      width: width,
+      height: height,
+      frameRate: frameRate,
+      duration: Math.round(duration * 100) / 100,
+      layers: made
+    },
+    place: record.place,
+    message: "Imported " + qkPlural(made, "clip", "clips") + " into \"" + compName + "\"."
+  };
+}
+
+/* ---------- After Effects: render and send back ---------- */
+
+function qkBridgeActiveComp() {
+  var comp = null;
+  try {
+    comp = app.project ? app.project.activeItem : null;
+  } catch (eProject) {}
+  if (!comp) return null;
+  try {
+    if (qkStr(comp.typeName) !== "Composition") return null;
+  } catch (eType) {
+    return null;
+  }
+  return comp;
+}
+
+function qkBridgeAerenderPath() {
+  var folder = "";
+  try {
+    folder = qkStr(app.path);
+  } catch (ePath) {}
+  folder = qkReplaceAll(folder, "\\", "/");
+  while (folder.length > 1 && folder.charAt(folder.length - 1) === "/") {
+    folder = folder.substring(0, folder.length - 1);
+  }
+  if (folder === "") return "";
+  var candidate = folder + "/aerender.exe";
+  try {
+    var file = new File(candidate);
+    if (file && file.exists) return candidate;
+  } catch (eFile) {}
+  /* Some builds report the parent folder instead of Support Files. */
+  var alt = folder + "/Support Files/aerender.exe";
+  try {
+    var other = new File(alt);
+    if (other && other.exists) return alt;
+  } catch (eAlt) {}
+  return "";
+}
+
+/* Templates differ per install and per language, so each candidate is applied
+   and verified in the project before aerender is called. Passing a template
+   name that does not exist is a hard aerender error, so we never guess. */
+var QK_BRIDGE_TEMPLATES = [
+  { choice: "auto", name: "QuickTime", extension: "mov" },
+  { choice: "auto", name: "Lossless", extension: "avi" },
+  { choice: "auto", name: "H.264 - Match Render Settings - 15 Mbps", extension: "mp4" },
+  { choice: "prores", name: "Apple ProRes 422 HQ", extension: "mov" },
+  { choice: "prores", name: "Apple ProRes 422", extension: "mov" },
+  { choice: "prores", name: "QuickTime", extension: "mov" },
+  { choice: "h264", name: "H.264 - Match Render Settings - 15 Mbps", extension: "mp4" },
+  { choice: "h264", name: "H.264", extension: "mp4" },
+  { choice: "lossless", name: "Lossless", extension: "avi" },
+  { choice: "lossless", name: "Lossless with Alpha", extension: "avi" }
+];
+
+function qkBridgeTemplateList(choice) {
+  var wanted = qkStr(choice) || "auto";
+  var out = [];
+  var i;
+  for (i = 0; i < QK_BRIDGE_TEMPLATES.length; i++) {
+    if (wanted === "auto" || QK_BRIDGE_TEMPLATES[i].choice === wanted) out.push(QK_BRIDGE_TEMPLATES[i]);
+  }
+  return out;
+}
+
+function qkBridgeQueueItem(comp) {
+  var queue = null;
+  try {
+    queue = app.project.renderQueue.items;
+  } catch (eQueue) {}
+  if (!queue) return { error: "After Effects did not return its render queue." };
+
+  var count = 0;
+  try {
+    count = queue.length;
+  } catch (eLength) {
+    count = 0;
+  }
+
+  var i;
+  for (i = 1; i <= count; i++) {
+    var existing = null;
+    try {
+      existing = queue[i];
+    } catch (eItem) {}
+    if (!existing) continue;
+    var target = null;
+    try {
+      target = existing.comp;
+    } catch (eComp) {}
+    if (target && qkStr(target.name) === qkStr(comp.name)) {
+      try {
+        existing.remove();
+      } catch (eRemove) {}
+    }
+  }
+
+  try {
+    return { item: app.project.renderQueue.items.add(comp) };
+  } catch (eAdd) {
+    return { error: "After Effects could not add the composition to the render queue: " + qkErrText(eAdd) };
+  }
+}
+
+function qkBridgePrepareRender(choice) {
+  var started = qkBeginUndo("QuickKit: Bridge render");
+  var steps = [];
+  var out = qkBridgePrepareRun(choice, steps);
+  qkEndUndo(started);
+  return qkBridgeReply(out, steps);
+}
+
+function qkBridgePrepareRun(choice, steps) {
+  var comp = qkBridgeActiveComp();
+  if (!comp) {
+    qkBridgeStep(steps, "comp", "Find the composition", "fail",
+      "Open the composition you want to send back in After Effects, then press Send back again.");
+    return { plan: null };
+  }
+
+  var compName = "";
+  var width = 0;
+  var height = 0;
+  var frameRate = 0;
+  var duration = 0;
+  try {
+    compName = qkStr(comp.name);
+    width = Math.round(qkSilenceNumber(comp.width, 0));
+    height = Math.round(qkSilenceNumber(comp.height, 0));
+    frameRate = qkSilenceNumber(comp.frameRate, 0);
+    duration = qkSilenceNumber(comp.duration, 0);
+  } catch (eInfo) {}
+  qkBridgeStep(steps, "comp", "Find the composition", "ok", compName + " - " + width + "x" + height + " at " + frameRate + " fps");
+
+  var projectPath = "";
+  try {
+    projectPath = app.project.file ? qkStr(app.project.file.fsName) : "";
+  } catch (eFile) {}
+  if (projectPath === "") {
+    qkBridgeStep(steps, "project", "Find the saved project file", "fail",
+      "This project has never been saved, so aerender has no file to open. Use File > Save As, then press Send back again.");
+    return { plan: null };
+  }
+  qkBridgeStep(steps, "project", "Find the saved project file", "ok", projectPath);
+
+  var aerender = qkBridgeAerenderPath();
+  if (aerender === "") {
+    qkBridgeStep(steps, "aerender", "Find aerender.exe", "note",
+      "aerender.exe was not found next to After Effects. The panel will fall back to the Render Queue, which freezes the panel until it finishes.");
+  } else {
+    qkBridgeStep(steps, "aerender", "Find aerender.exe", "ok", aerender);
+  }
+
+  var queued = qkBridgeQueueItem(comp);
+  if (queued.error) {
+    qkBridgeStep(steps, "queue", "Add the composition to the render queue", "fail", queued.error);
+    return { plan: null };
+  }
+  var item = queued.item;
+  qkBridgeStep(steps, "queue", "Add the composition to the render queue", "ok", "Render queue item " + qkSilenceNumber(item.index, 0));
+
+  try {
+    item.applyTemplate("Best Settings");
+    qkBridgeStep(steps, "settings", "Apply render settings", "ok", "Best Settings");
+  } catch (eSettings) {
+    qkBridgeStep(steps, "settings", "Apply render settings", "note",
+      "The \"Best Settings\" template is not on this machine, so the current render settings are used.");
+  }
+
+  var outputModule = null;
+  try {
+    outputModule = item.outputModule(1);
+  } catch (eModule) {}
+  if (!outputModule) {
+    qkBridgeStep(steps, "output", "Set the output module", "fail",
+      "After Effects did not return an output module for that render queue item.");
+    return { plan: null };
+  }
+
+  var candidates = qkBridgeTemplateList(choice);
+  var chosen = null;
+  var tried = [];
+  var i;
+  for (i = 0; i < candidates.length; i++) {
+    try {
+      outputModule.applyTemplate(candidates[i].name);
+      chosen = candidates[i];
+      break;
+    } catch (eApply) {
+      tried.push(candidates[i].name);
+    }
+  }
+
+  if (!chosen) {
+    qkBridgeStep(steps, "output", "Set the output module", "fail",
+      "None of the output module templates QuickKit knows are on this machine (tried: " + qkJoin(tried) +
+      "). Open the render queue, choose an output module once, and add a template named \"Lossless\", then try again.");
+    return { plan: null };
+  }
+
+  var renderFolder = qkBridgeFolder("renders");
+  if (renderFolder === "") {
+    qkBridgeStep(steps, "output", "Set the output module", "fail",
+      "QuickKit could not create %APPDATA%\\QuickKit\\bridge\\renders. Check that your Windows user can write to %APPDATA%.");
+    return { plan: null };
+  }
+
+  var outputPath = renderFolder + "/" + qkBridgeSafeName(compName) + " " + qkBridgeStamp() + "." + chosen.extension;
+  try {
+    outputModule.file = new File(outputPath);
+  } catch (eOutput) {
+    qkBridgeStep(steps, "output", "Set the output module", "fail",
+      "After Effects refused the output path " + outputPath + ": " + qkErrText(eOutput));
+    return { plan: null };
+  }
+  if (!outputModule.file) {
+    qkBridgeStep(steps, "output", "Set the output module", "fail",
+      "After Effects did not accept " + outputPath + ". Pick a different folder or free some disk space.");
+    return { plan: null };
+  }
+  qkBridgeStep(steps, "output", "Set the output module", "ok",
+    chosen.name + " -> " + qkPathName(outputPath));
+
+  try {
+    app.project.save();
+    qkBridgeStep(steps, "save", "Save the project", "ok", "Saved, so aerender opens the same render queue item.");
+  } catch (eSave) {
+    qkBridgeStep(steps, "save", "Save the project", "fail",
+      "After Effects could not save the project: " + qkErrText(eSave) +
+      ". Save it by hand (Ctrl+S), then press Send back again.");
+    return { plan: null };
+  }
+
+  qkBridgeStep(steps, "ready", "Ready to render", "note",
+    "aerender will render \"" + compName + "\" and QuickKit will then hand the file to Premiere.");
+
+  return {
+    plan: {
+      comp: compName,
+      project: projectPath,
+      output: outputPath,
+      template: chosen.name,
+      extension: chosen.extension,
+      aerender: aerender,
+      width: width,
+      height: height,
+      frameRate: frameRate,
+      duration: Math.round(duration * 100) / 100
+    }
+  };
+}
+
+function qkBridgeSendToPremiere(returnId) {
+  var targets = [];
+  try {
+    targets = BridgeTalk.getTargets();
+  } catch (eTargets) {
+    return { ok: false, message: "BridgeTalk is not available in this app, so the file was left in the returns folder." };
+  }
+
+  var running = false;
+  var i;
+  for (i = 0; i < targets.length; i++) {
+    if (qkStr(targets[i]).toLowerCase() === "premierepro") running = true;
+  }
+  if (!running) {
+    return { ok: false, message: "Premiere Pro is not running. The render is waiting in the returns folder; open QuickKit in Premiere and press Place." };
+  }
+
+  try {
+    var message = new BridgeTalk();
+    message.target = "premierepro";
+    message.body = "qkBridgePlaceReturn(" + qkJsonStringify(returnId) + ");";
+    message.send(15);
+    return { ok: true, message: "Sent to Premiere Pro. It imports and places the file; if nothing happens, open QuickKit in Premiere and press Place." };
+  } catch (eSend) {
+    return { ok: false, message: "BridgeTalk could not reach Premiere Pro (" + qkErrText(eSend) + "). The file is still in the returns folder." };
+  }
+}
+
+function qkBridgeReadImportRecord(compName) {
+  var path = qkBridgeFile("imports", qkBridgeSafeName(compName).toLowerCase() + ".json");
+  if (path === "") return null;
+  var read = qkBridgeReadJson(path);
+  if (read.error) return null;
+  return read.data;
+}
+
+function qkBridgeFinishRender(payloadJson) {
+  var steps = [];
+  var payload = null;
+  try {
+    payload = qkJsonParse(payloadJson);
+  } catch (eParse) {
+    qkBridgeStep(steps, "payload", "Read the render result", "fail",
+      "The render result arrived damaged, so nothing was recorded. Render again.");
+    return qkBridgeReply({ placed: false }, steps);
+  }
+
+  var output = qkStr(payload.output);
+  var compName = qkStr(payload.comp);
+  var bytes = 0;
+
+  if (output === "") {
+    qkBridgeStep(steps, "render", "Check the rendered file", "fail", "The panel did not report an output file.");
+    return qkBridgeReply({ placed: false }, steps);
+  }
+
+  try {
+    var file = new File(output);
+    if (file && file.exists) bytes = qkSilenceNumber(file.length, 0);
+  } catch (eFile) {}
+
+  if (bytes <= 0) {
+    qkBridgeStep(steps, "render", "Check the rendered file", "fail",
+      "There is no file at " + output + ". The render did not finish; press Render again.");
+    return qkBridgeReply({ placed: false }, steps);
+  }
+  qkBridgeStep(steps, "render", "Check the rendered file", "ok",
+    qkPathName(output) + " (" + Math.round(bytes / 1048576 * 10) / 10 + " MB)");
+
+  var record = qkBridgeReadImportRecord(compName);
+  var place = null;
+  if (record && record.place) {
+    place = record.place;
+    qkBridgeStep(steps, "place", "Find the original position", "ok",
+      "Sequence \"" + qkStr(record.sequence ? record.sequence.name : "") + "\", " +
+      (Math.round(qkSilenceNumber(place.start, 0) * 100) / 100) + " s on " + qkStr(place.trackName));
+  } else {
+    qkBridgeStep(steps, "place", "Find the original position", "note",
+      "This comp was not built from a Premiere handoff, so there is no original position. Premiere will place it at 0 s.");
+  }
+
+  var returnId = qkBridgeNewId();
+  var returnsFolder = qkBridgeFolder("returns");
+  if (returnsFolder === "") {
+    qkBridgeStep(steps, "write", "Write the return file", "fail",
+      "QuickKit could not create %APPDATA%\\QuickKit\\bridge\\returns. Check that your Windows user can write to %APPDATA%.");
+    return qkBridgeReply({ placed: false }, steps);
+  }
+
+  var recordReturn = {
+    format: QK_BRIDGE_RETURN,
+    version: QK_BRIDGE_VERSION,
+    id: returnId,
+    created: qkDateText(),
+    comp: compName,
+    render: output,
+    bytes: bytes,
+    duration: qkSilenceNumber(payload.duration, 0),
+    width: qkSilenceNumber(payload.width, 0),
+    height: qkSilenceNumber(payload.height, 0),
+    frameRate: qkSilenceNumber(payload.frameRate, 0),
+    place: place,
+    sequence: record ? record.sequence : null,
+    handoffId: record ? qkStr(record.handoffId) : "",
+    note: "Rendered by QuickKit in After Effects. This is a file handoff, not Dynamic Link."
+  };
+
+  var returnPath = returnsFolder + "/" + returnId + ".qkreturn";
+  if (!qkFileWriteSafe(returnPath, qkJsonStringify(recordReturn))) {
+    qkBridgeStep(steps, "write", "Write the return file", "fail", "Windows refused to write " + returnPath + ".");
+    return qkBridgeReply({ placed: false }, steps);
+  }
+  qkBridgeStep(steps, "write", "Write the return file", "ok", qkPathName(returnPath));
+
+  var placed = false;
+  if (payload.bridgeTalk === false) {
+    qkBridgeStep(steps, "bridge", "Hand it to Premiere", "note",
+      "Automatic hand-off was turned off. Open QuickKit in Premiere Pro, Bridge tab, and press Place.");
+  } else {
+    var sent = qkBridgeSendToPremiere(returnId);
+    placed = !!sent.ok;
+    qkBridgeStep(steps, "bridge", "Hand it to Premiere", sent.ok ? "ok" : "note", sent.message);
+  }
+
+  return qkBridgeReply(
+    {
+      placed: placed,
+      file: returnPath,
+      render: output,
+      id: returnId,
+      message: placed
+        ? "Rendered and handed to Premiere Pro. Check the timeline position before you keep working."
+        : "Rendered. The file is waiting for Premiere Pro in the returns folder."
+    },
+    steps
+  );
+}
+
+/* ---------- Premiere: place a render back ---------- */
+
+function qkBridgeFindProjectItem(path) {
+  var root = null;
+  try {
+    root = app.project.rootItem;
+  } catch (eRoot) {}
+  if (!root) return null;
+
+  var wanted = qkStr(path).toLowerCase();
+  var name = qkPathName(path).toLowerCase();
+  var stack = [root];
+  var guard = 0;
+
+  while (stack.length && guard < 4000) {
+    guard++;
+    var node = stack.pop();
+    var children = null;
+    try {
+      children = node.children;
+    } catch (eChildren) {}
+    if (!children) continue;
+
+    var count = 0;
+    try {
+      count = children.numItems;
+    } catch (eCount) {
+      count = 0;
+    }
+
+    for (var i = 0; i < count; i++) {
+      var child = null;
+      try {
+        child = children[i];
+      } catch (eChild) {}
+      if (!child) continue;
+      var childPath = "";
+      try {
+        childPath = qkStr(child.getMediaPath()).toLowerCase();
+      } catch (ePath) {}
+      if (childPath !== "" && childPath === wanted) return child;
+      try {
+        if (qkStr(child.name).toLowerCase() === name && childPath !== "") return child;
+      } catch (eName) {}
+      try {
+        if (child.children && child.children.numItems > 0) stack.push(child);
+      } catch (ePush) {}
+    }
+  }
+  return null;
+}
+
+function qkBridgePlaceReturn(id) {
+  var started = qkBeginUndo("QuickKit: Bridge place");
+  var steps = [];
+  var returnId = qkStr(id);
+  var path = qkBridgeFile("returns", returnId + ".qkreturn");
+  var out = qkBridgePlaceRun(returnId, path, steps);
+  qkEndUndo(started);
+  return qkBridgeReply(out, steps);
+}
+
+function qkBridgePlaceRun(returnId, path, steps) {
+  var empty = { id: returnId, placed: false };
+
+  if (path === "") {
+    qkBridgeStep(steps, "folder", "Find the return file", "fail",
+      "QuickKit could not build the returns folder path. Check that %APPDATA% is writable.");
+    return empty;
+  }
+
+  var read = qkBridgeReadJson(path);
+  if (read.error) {
+    qkBridgeStep(steps, "read", "Read the return file", "fail", read.error);
+    return empty;
+  }
+  var record = read.data;
+  qkBridgeStep(steps, "read", "Read the return file", "ok", qkPathName(path));
+
+  if (qkStr(record.format) !== QK_BRIDGE_RETURN) {
+    qkBridgeStep(steps, "format", "Check the return file", "fail", "That is not a QuickKit return file. Render again from After Effects.");
+    return empty;
+  }
+
+  var render = qkStr(record.render);
+  var exists = false;
+  try {
+    var file = new File(render);
+    exists = file ? !!file.exists : false;
+  } catch (eFile) {}
+  if (!exists) {
+    qkBridgeStep(steps, "file", "Check the rendered file", "fail",
+      "The render is not at " + render + ". It may have been moved or deleted; render again from After Effects.");
+    return empty;
+  }
+  qkBridgeStep(steps, "file", "Check the rendered file", "ok", qkPathName(render));
+
+  var seq = qkBridgeActiveSequence();
+  if (!seq) {
+    qkBridgeStep(steps, "sequence", "Find the destination sequence", "fail",
+      "No open sequence. Open the sequence this came from, then press Place again.");
+    return empty;
+  }
+  qkBridgeStep(steps, "sequence", "Find the destination sequence", "ok", qkStr(seq.name));
+
+  try {
+    app.project.importFiles([render], true, null, false);
+  } catch (eImport) {
+    qkBridgeStep(steps, "import", "Import the render", "fail",
+      "Premiere could not import " + render + ": " + qkErrText(eImport));
+    return empty;
+  }
+
+  var item = qkBridgeFindProjectItem(render);
+  if (!item) {
+    qkBridgeStep(steps, "import", "Import the render", "fail",
+      "Premiere imported the file but QuickKit cannot find it in the project panel. Import it by hand from " + render + ".");
+    return empty;
+  }
+  qkBridgeStep(steps, "import", "Import the render", "ok", qkStr(item.name));
+
+  var place = record.place || null;
+  var start = place ? qkSilenceNumber(place.start, 0) : 0;
+  var trackIndex = place ? Math.round(qkSilenceNumber(place.track, 0)) : 0;
+  if (trackIndex < 0) trackIndex = 0;
+
+  var track = null;
+  try {
+    if (trackIndex < seq.videoTracks.numTracks) track = seq.videoTracks[trackIndex];
+  } catch (eTrack) {}
+  if (!track) {
+    try {
+      track = seq.videoTracks[0];
+    } catch (eFirst) {}
+  }
+  if (!track) {
+    qkBridgeStep(steps, "place", "Place it on the timeline", "fail",
+      "The sequence has no video track QuickKit can write to. Add a video track, then press Place again.");
+    return empty;
+  }
+
+  var placedOk = false;
+  var where = start;
+  try {
+    if (typeof track.overwriteClip === "function") {
+      placedOk = !!track.overwriteClip(item, start);
+    }
+  } catch (eOverwrite) {
+    placedOk = false;
+  }
+  if (!placedOk) {
+    /* insertClip ripples instead of overwriting, so it is the second choice. */
+    try {
+      placedOk = !!track.insertClip(item, start);
+    } catch (eInsert) {
+      placedOk = false;
+    }
+  }
+
+  if (!placedOk) {
+    qkBridgeStep(steps, "place", "Place it on the timeline", "fail",
+      "Premiere did not accept the clip at " + start + " s on the first video track. The file is imported already: drag it onto the timeline yourself.");
+    return empty;
+  }
+
+  var trackName = "V1";
+  try {
+    if (track.name) trackName = qkStr(track.name);
+  } catch (eName) {}
+
+  if (place) {
+    qkBridgeStep(steps, "place", "Place it on the timeline", "ok",
+      "Placed at " + (Math.round(start * 100) / 100) + " s on " + trackName + " (the original position).");
+  } else {
+    qkBridgeStep(steps, "place", "Place it on the timeline", "note",
+      "Placed at 0 s on " + trackName + " because this comp was not built from a Premiere handoff, so its original position is unknown.");
+    where = 0;
+  }
+
+  var archive = qkBridgeFile("placed", returnId + ".qkreturn");
+  if (archive && qkBridgeMove(path, archive)) {
+    qkBridgeStep(steps, "archive", "File the return away", "ok", "Moved to placed.");
+  } else {
+    qkBridgeStep(steps, "archive", "File the return away", "note",
+      "The return file stayed in the returns folder, so it will be listed again.");
+  }
+
+  qkBridgeStep(steps, "check", "Check the result", "note",
+    "This replaced whatever picture was under the clip. If the comp is longer than the original clip, check the frames after it.");
+
+  return {
+    id: returnId,
+    placed: true,
+    start: Math.round(where * 100) / 100,
+    track: trackName,
+    message: "Placed \"" + qkStr(record.comp) + "\" at " + (Math.round(where * 100) / 100) + " s on " + trackName + "."
+  };
+}
+
+/* ---------- both apps: lists ---------- */
+
+function qkBridgeListKind(kind, suffix, step) {
+  var folder = qkBridgeFolder(kind);
+  var out = [];
+  var skipped = 0;
+  if (folder === "") return { items: out, skipped: skipped, folder: "" };
+
+  var entries = [];
+  try {
+    var dir = new Folder(folder);
+    if (dir && dir.exists) entries = dir.getFiles("*" + suffix) || [];
+  } catch (eList) {
+    entries = [];
+  }
+
+  var i;
+  for (i = 0; i < entries.length; i++) {
+    var entry = entries[i];
+    var path = "";
+    try {
+      path = qkStr(entry.fsName);
+    } catch (ePath) {}
+    if (path === "") continue;
+
+    var read = qkBridgeReadJson(path);
+    if (read.error) {
+      skipped++;
+      continue;
+    }
+    var data = read.data;
+    var row = {
+      id: qkStr(data.id) || qkPathName(path).replace(/\.(qkhandoff|qkreturn)$/i, ""),
+      file: path,
+      created: qkStr(data.created)
+    };
+
+    if (step === "pending") {
+      var clips = qkPresetIsArray(data.clips) ? data.clips : [];
+      var seq = data.sequence || {};
+      row.comp = qkStr(seq.name);
+      row.clips = clips.length;
+      row.frameRate = qkSilenceNumber(seq.frameRate, 0);
+      row.width = Math.round(qkSilenceNumber(seq.width, 0));
+      row.height = Math.round(qkSilenceNumber(seq.height, 0));
+      row.duration = Math.round(qkSilenceNumber(seq.duration, 0) * 100) / 100;
+      row.summary = clips.length ? qkStr(clips[0].name) + (clips.length > 1 ? " + " + (clips.length - 1) + " more" : "") : "no clips";
+    } else {
+      var place = data.place || null;
+      row.comp = qkStr(data.comp);
+      row.render = qkStr(data.render);
+      row.duration = Math.round(qkSilenceNumber(data.duration, 0) * 100) / 100;
+      row.at = place ? Math.round(qkSilenceNumber(place.start, 0) * 100) / 100 : 0;
+      row.trackName = place ? qkStr(place.trackName) : "";
+      row.summary = qkPathName(row.render);
+      var present = false;
+      try {
+        var renderFile = new File(row.render);
+        present = renderFile ? !!renderFile.exists : false;
+      } catch (eRender) {}
+      row.renderExists = present;
+    }
+
+    out.push(row);
+  }
+
+  return { items: out, skipped: skipped, folder: folder };
+}
+
+function qkBridgeList() {
+  var pending = qkBridgeListKind("pending", ".qkhandoff", "pending");
+  var returns = qkBridgeListKind("returns", ".qkreturn", "returns");
+
+  return qkJsonStringify({
+    ok: true,
+    host: qkHostId(),
+    pending: pending.items,
+    returns: returns.items,
+    skipped: pending.skipped + returns.skipped,
+    folders: {
+      pending: pending.folder,
+      returns: returns.folder,
+      renders: qkBridgeFolder("renders")
+    },
+    message:
+      qkPlural(pending.items.length, "handoff", "handoffs") + " waiting for After Effects, " +
+      qkPlural(returns.items.length, "render", "renders") + " waiting for Premiere Pro."
+  });
+}
+
+function qkBridgeInfo() {
+  var comp = qkBridgeActiveComp();
+  var compInfo = null;
+  if (comp) {
+    compInfo = {
+      name: qkStr(comp.name),
+      width: Math.round(qkSilenceNumber(comp.width, 0)),
+      height: Math.round(qkSilenceNumber(comp.height, 0)),
+      frameRate: qkSilenceNumber(comp.frameRate, 0),
+      duration: Math.round(qkSilenceNumber(comp.duration, 0) * 100) / 100
+    };
+  }
+
+  var projectPath = "";
+  try {
+    projectPath = app.project && app.project.file ? qkStr(app.project.file.fsName) : "";
+  } catch (eFile) {}
+
+  return qkJsonStringify({
+    ok: true,
+    host: qkHostId(),
+    root: qkBridgeBasePath(),
+    project: projectPath,
+    comp: compInfo,
+    aerender: qkBridgeAerenderPath(),
+    handoff: false,
+    message: "File handoff, not Dynamic Link: nothing crosses the apps until you press a button."
+  });
+}

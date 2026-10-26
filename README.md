@@ -4,9 +4,10 @@ A free, local-only panel for **Adobe After Effects** and **Adobe Premiere Pro**
 on Windows 10 and 11. One extension, seven tools, no account, no cloud, no
 tracking.
 
-Version **0.5.0** — Part 5: a silence cutter for Premiere Pro joins the live
-After Effects tools (anchor, text, layers, easing, presets), plus the Part 1
-shell, host test and installer.
+Version **0.6.0** — Part 6: a Bridge tab moves clips to After Effects and the
+render back to the same Premiere timeline position, as files. It joins the live
+After Effects tools (anchor, text, layers, easing, presets), the Premiere
+silence cutter, and the Part 1 shell, host test and installer.
 
 ---
 
@@ -20,6 +21,9 @@ shell, host test and installer.
   pack import/export and 15 original starters — all stored on your PC.
 - A **Silence cutter** for Premiere Pro: FFmpeg finds the gaps in the sequence
   audio, you check them on a waveform, then cut them out in one undo step.
+- A **Bridge** between the two apps: send selected Premiere clips to After
+  Effects as a handoff file, get a matching composition, render it with
+  `aerender`, and place the render back at the original timeline position.
 - **Test host connection** asks the app for its name and version and shows the
   answer. This is the proof the panel talks to the application.
 - A welcome screen on first run, and a help button to bring it back.
@@ -28,8 +32,8 @@ shell, host test and installer.
 - Works from a 240px to 600px wide panel.
 
 The Anchor, Presets, Text, Layers and Easing tabs are live in After Effects,
-and the Silence tab is live in Premiere Pro. Bridge is still a shell. Every
-tool press is **one undo group**: press Ctrl+Z once to reverse the whole
+the Silence tab is live in Premiere Pro, and the Bridge tab works in both.
+Every tool press is **one undo group**: press Ctrl+Z once to reverse the whole
 action.
 
 ---
@@ -146,6 +150,62 @@ places it looked in.
 
 ---
 
+## Bridge (Premiere Pro ⇄ After Effects)
+
+**This is a file handoff, not Dynamic Link.** QuickKit cannot create a Dynamic
+Link composition from a script, and it does not pretend to: nothing stays
+linked, and editing a clip in Premiere after sending it does not update the
+After Effects comp.
+
+How it works, in two halves:
+
+1. **Send to After Effects** (Premiere Pro side). Select clips on the timeline
+   and press **Send**. QuickKit writes a small JSON handoff into
+   `%APPDATA%\QuickKit\bridge\pending` with the sequence name, frame rate,
+   width and height, and for each clip its **used in/out range**, source path,
+   speed and timeline position. The panel lists every step it took and stops
+   with a specific message if there is no sequence, no readable media, or an
+   offline file.
+2. **Import** (After Effects side). Open the Bridge tab in After Effects and
+   press **Import** on the waiting handoff. QuickKit imports the footage once
+   per file, creates a composition at the sequence's frame rate and size, and
+   trims each layer to exactly the range Premiere was using (including speed).
+   Comp time 0 is the earliest clip's timeline start. The original Premiere
+   position is remembered for the return trip.
+3. **Send back to Premiere** (After Effects side). Open the finished comp and
+   press **Render and send back**. QuickKit applies an output template that
+   exists on this machine, saves the project, renders with **`aerender`**, and
+   writes a return file. Premiere imports the render and overwrites the clip at
+   the original position. If Premiere is not running, the render waits in
+   `returns` and the Premiere panel's **Place** button finishes the job.
+
+**Why `aerender` and not the Render Queue.** `app.project.renderQueue.render()`
+runs inside ExtendScript: while it runs, After Effects cannot answer the panel,
+so the panel freezes, the progress bar cannot move and Cancel cannot work. It
+can also open modal dialogs the panel cannot dismiss. `aerender` is a separate
+process, so QuickKit reads real progress from its output, Cancel kills the
+child, and the panel stays usable. The render queue is only a documented
+fallback: if `aerender.exe` is missing, the comp is still queued with its
+output configured, and the panel says to render it from the Render Queue by
+hand.
+
+**Limitations, in plain words.**
+- Not Dynamic Link. The handoff and the render are ordinary files; moving or
+  deleting `%APPDATA%\QuickKit\bridge` breaks the link between the two halves.
+- One-way edits. Changes made to the Premiere clip after sending are not seen
+  by After Effects, and changes in the comp are only seen after another render.
+- The footage must be on disk. An offline clip is reported by name; it is not
+  relinked automatically.
+- Speed changes are applied as a layer stretch; time remapping, reverse speed
+  and speed ramps are not carried over.
+- Multi-clip handoffs come back as **one rendered file** placed at the first
+  clip's start and video track. Anything else under it is overwritten.
+- The After Effects project must be **saved at least once** before rendering,
+  because `aerender` needs a file to open. The panel says so before it starts.
+- Audio is not carried over: the comp is built from the video clips.
+
+---
+
 ## Requirements
 
 - Windows 10 or 11. Built and checked on Windows 11.
@@ -155,6 +215,9 @@ places it looked in.
 - The Silence tab needs an `ffmpeg.exe`. One is bundled by
   `scripts\fetch-ffmpeg.ps1` at build time; an FFmpeg already on PATH also
   works. The other tabs do not need it.
+- The Bridge needs After Effects installed on the same machine as Premiere Pro.
+  The After Effects project must be saved once before a render, and the AE half
+  uses the `aerender.exe` that ships with After Effects.
 
 ---
 

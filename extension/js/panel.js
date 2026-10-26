@@ -4,7 +4,7 @@
 (function (window, document) {
   "use strict";
 
-  var VERSION = "0.5.0";
+  var VERSION = "0.6.0";
   var WELCOME_KEY = "qk.welcome.v1";
   var HOST_TEST_TIMEOUT = 8000;
   var ACTION_TIMEOUT = 15000;
@@ -127,7 +127,9 @@
       label: "Bridge",
       icon: "bridge",
       host: null,
-      body: "Send selected work between After Effects and Premiere Pro."
+      panelId: "bridge",
+      body: "Send selected work between After Effects and Premiere Pro.",
+      hostNote: "Bridge works in both apps, but each half needs the other app to send something first."
     }
   ];
 
@@ -255,7 +257,8 @@
       text: document.getElementById("qk-panel-text"),
       layers: document.getElementById("qk-panel-layers"),
       easing: document.getElementById("qk-panel-easing"),
-      silence: document.getElementById("qk-panel-silence")
+      silence: document.getElementById("qk-panel-silence"),
+      bridge: document.getElementById("qk-panel-bridge")
     };
 
     if (els.version) els.version.textContent = "v" + VERSION;
@@ -274,6 +277,7 @@
     setTextPreset("fade", false);
     bindPresets();
     bindSilence();
+    bindBridge();
     renderPresets();
   }
 
@@ -378,6 +382,7 @@
     renderContent();
     if (id === "text") scheduleTextPreview();
     if (id === "silence") silenceOnShow();
+    if (id === "bridge") bridgeOnShow();
     if (id === "presets") {
       if (state.hosted && !state.presetLoaded) loadPresets();
       else renderPresets();
@@ -3032,6 +3037,587 @@
       }, 120);
     });
   }
+  /* ---------- bridge (Part 6) ---------- */
+
+  var bridge = {
+    module: null,
+    moduleError: "",
+    pending: [],
+    returns: [],
+    busy: false,
+    job: null
+  };
+
+  function bridgeNode() {
+    try {
+      return (
+        typeof require === "function" &&
+        typeof process !== "undefined" &&
+        !!process.versions &&
+        !!process.versions.node
+      );
+    } catch (eNode) {
+      return false;
+    }
+  }
+
+  /* render-node.js is required from panel.js, never loaded as a page script. */
+  function bridgeLoadModule() {
+    if (bridge.module) return bridge.module;
+    if (bridge.moduleError) return null;
+    if (!bridgeNode()) {
+      bridge.moduleError =
+        "Node is not available in this panel, so aerender cannot start. Open QuickKit from Window > Extensions inside After Effects.";
+      return null;
+    }
+
+    var api = window.CSInterfaceLite;
+    var root = api && api.getSystemPath ? String(api.getSystemPath("extension") || "") : "";
+    var path = null;
+    try {
+      path = require("path");
+    } catch (ePath) {
+      path = null;
+    }
+
+    try {
+      root = root.replace(/^file:\/\/\//i, "").replace(/^file:\/\//i, "");
+      try {
+        root = decodeURIComponent(root);
+      } catch (eDecode) {}
+      var file = root && path ? path.join(root, "js", "render-node.js") : "./js/render-node.js";
+      bridge.module = require(file);
+      return bridge.module;
+    } catch (eLoad) {
+      bridge.moduleError = "Could not load the render helper: " + (eLoad && eLoad.message ? eLoad.message : eLoad);
+      return null;
+    }
+  }
+
+  function bridgeCall(expr, done) {
+    var api = window.CSInterfaceLite;
+    if (!api || !api.isHosted) {
+      done({
+        ok: false,
+        steps: [],
+        error: "QuickKit is not connected to an Adobe app. Open the panel from Window > Extensions inside After Effects or Premiere Pro."
+      });
+      return;
+    }
+    api.evalScript(expr, function (raw) {
+      var data = null;
+      try {
+        data = JSON.parse(String(raw));
+      } catch (eParse) {
+        data = null;
+      }
+      if (!data) {
+        done({
+          ok: false,
+          steps: [],
+          error: "The app did not answer in a way QuickKit could read. Reopen the panel and try again."
+        });
+        return;
+      }
+      done(data);
+    });
+  }
+
+  function bridgeFirstFail(data) {
+    var steps = data && data.steps ? data.steps : [];
+    for (var i = 0; i < steps.length; i++) {
+      if (steps[i].state === "fail") return String(steps[i].detail || steps[i].label || "");
+    }
+    return data && data.error ? String(data.error) : "";
+  }
+
+  function bridgeShowSteps(steps, fallback) {
+    var wrap = document.getElementById("qk-bridge-steps-wrap");
+    var list = document.getElementById("qk-bridge-steps");
+    if (!wrap || !list) return;
+
+    var rows = Array.isArray(steps) ? steps.filter(function (step) {
+      return step && (step.label || step.detail);
+    }) : [];
+    if (!rows.length && fallback) {
+      rows = [{ label: "QuickKit could not start", state: "fail", detail: String(fallback) }];
+    }
+
+    while (list.firstChild) list.removeChild(list.firstChild);
+
+    if (!rows.length) {
+      wrap.hidden = true;
+      return;
+    }
+
+    wrap.hidden = false;
+    rows.forEach(function (step) {
+      var state = step.state === "ok" || step.state === "fail" || step.state === "note" ? step.state : "note";
+      var li = document.createElement("li");
+      li.className = "qk-bridge-step is-" + state;
+
+      var dot = document.createElement("span");
+      dot.className = "qk-bridge-step__dot";
+      dot.setAttribute("aria-hidden", "true");
+
+      var body = document.createElement("span");
+      var label = document.createElement("span");
+      label.className = "qk-bridge-step__label";
+      label.textContent = String(step.label || "");
+      var detail = document.createElement("span");
+      detail.className = "qk-bridge-step__detail";
+      detail.textContent = String(step.detail || "");
+      if (!step.detail) detail.hidden = true;
+
+      body.appendChild(label);
+      body.appendChild(detail);
+      li.appendChild(dot);
+      li.appendChild(body);
+      list.appendChild(li);
+    });
+  }
+
+  function bridgeSetBusy(busy) {
+    ["qk-bridge-send", "qk-bridge-refresh", "qk-bridge-refresh-aeft", "qk-bridge-render"].forEach(function (id) {
+      var node = document.getElementById(id);
+      if (node) node.disabled = !!busy;
+    });
+    var cancel = document.getElementById("qk-bridge-cancel");
+    if (cancel) cancel.hidden = !busy || !bridge.job;
+    bridge.busy = !!busy;
+  }
+
+  function bridgeProgress(percent, text) {
+    var wrap = document.getElementById("qk-bridge-progress-wrap");
+    var bar = document.getElementById("qk-bridge-progress");
+    var line = document.getElementById("qk-bridge-progress-text");
+    if (wrap) wrap.hidden = false;
+    var value = Number(percent);
+    if (!isFinite(value) || value < 0) value = 0;
+    if (value > 100) value = 100;
+    if (bar) bar.style.width = String(Math.round(value)) + "%";
+    if (line) line.textContent = String(text || "Rendering");
+  }
+
+  function bridgeProgressHide() {
+    var wrap = document.getElementById("qk-bridge-progress-wrap");
+    var bar = document.getElementById("qk-bridge-progress");
+    if (wrap) wrap.hidden = true;
+    if (bar) bar.style.width = "0%";
+  }
+
+  function bridgeNote(id, text) {
+    var node = document.getElementById(id);
+    if (node) node.textContent = String(text || "");
+  }
+
+  function bridgeSeconds(value) {
+    var n = Number(value);
+    if (!isFinite(n) || n < 0) n = 0;
+    return (Math.round(n * 100) / 100) + " s";
+  }
+
+  function bridgeClearList(node) {
+    while (node && node.firstChild) node.removeChild(node.firstChild);
+  }
+
+  function bridgeRow(title, meta, action, tip, handler, disabled) {
+    var li = document.createElement("li");
+    li.className = "qk-bridge-row";
+
+    var name = document.createElement("span");
+    name.className = "qk-bridge-row__name";
+    name.textContent = String(title || "");
+
+    var foot = document.createElement("div");
+    foot.className = "qk-bridge-row__foot";
+
+    var info = document.createElement("span");
+    info.className = "qk-bridge-row__meta";
+    info.textContent = String(meta || "");
+
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "qk-btn qk-btn--primary qk-btn--xs";
+    btn.textContent = action;
+    btn.setAttribute("data-tip", tip);
+    btn.disabled = !!disabled;
+    if (!disabled) btn.addEventListener("click", handler);
+
+    foot.appendChild(info);
+    foot.appendChild(btn);
+    li.appendChild(name);
+    li.appendChild(foot);
+    return li;
+  }
+
+  function bridgeDrawPending() {
+    var list = document.getElementById("qk-bridge-pending");
+    if (!list) return;
+    bridgeClearList(list);
+
+    if (!bridge.pending.length) {
+      bridgeNote("qk-bridge-pending-note", "No handoffs waiting yet. Send clips from Premiere Pro first.");
+      return;
+    }
+
+    bridge.pending.forEach(function (row) {
+      var meta =
+        String(row.summary || "") + " - " +
+        String(row.width || 0) + "x" + String(row.height || 0) + " at " +
+        String(Math.round(Number(row.frameRate) * 100) / 100) + " fps, " +
+        bridgeSeconds(row.duration);
+      list.appendChild(
+        bridgeRow(
+          row.comp || "Untitled handoff",
+          meta,
+          "Import",
+          "Build a matching composition from this handoff and trim the layers to the used range",
+          function () {
+            bridgeImport(String(row.id), this);
+          }
+        )
+      );
+    });
+
+    bridgeNote(
+      "qk-bridge-pending-note",
+      bridge.pending.length === 1 ? "1 handoff waiting." : bridge.pending.length + " handoffs waiting."
+    );
+  }
+
+  function bridgeDrawReturns() {
+    var list = document.getElementById("qk-bridge-returns");
+    if (!list) return;
+    bridgeClearList(list);
+
+    if (!bridge.returns.length) {
+      bridgeNote("qk-bridge-returns-note", "No renders waiting yet. Send a composition back from After Effects.");
+      return;
+    }
+
+    bridge.returns.forEach(function (row) {
+      var meta = (row.renderExists ? "" : "file missing - ") + "at " + bridgeSeconds(row.at) + (row.trackName ? " on " + row.trackName : "");
+      list.appendChild(
+        bridgeRow(
+          row.comp || "Untitled render",
+          meta,
+          "Place",
+          row.renderExists
+            ? "Import the render and overwrite the clip at its original position"
+            : "The rendered file is missing, so QuickKit cannot place it. Render again in After Effects.",
+          function () {
+            bridgePlace(String(row.id), this);
+          },
+          !row.renderExists
+        )
+      );
+    });
+
+    var missing = bridge.returns.filter(function (row) {
+      return !row.renderExists;
+    }).length;
+    bridgeNote(
+      "qk-bridge-returns-note",
+      (bridge.returns.length === 1 ? "1 render waiting" : bridge.returns.length + " renders waiting") +
+        (missing ? " - " + (missing === 1 ? "1 file is" : missing + " files are") + " missing on disk." : ".")
+    );
+  }
+
+  function bridgeCompInfo(info) {
+    var line = document.getElementById("qk-bridge-comp");
+    if (!line) return;
+    if (!info || !info.comp) {
+      line.textContent = "No composition open. Open the composition you want to send back.";
+      return;
+    }
+    var comp = info.comp;
+    line.textContent =
+      comp.name + " - " + comp.width + "x" + comp.height + " at " +
+      (Math.round(Number(comp.frameRate) * 100) / 100) + " fps, " + bridgeSeconds(comp.duration);
+  }
+
+  function bridgeRefresh() {
+    if (!state.hosted) {
+      bridge.pending = [];
+      bridge.returns = [];
+      bridgeDrawPending();
+      bridgeDrawReturns();
+      bridgeNote(
+        "qk-bridge-pending-note",
+        "Preview only: open QuickKit inside After Effects to read handoffs."
+      );
+      bridgeNote(
+        "qk-bridge-returns-note",
+        "Preview only: open QuickKit inside Premiere Pro to place renders."
+      );
+      bridgeCompInfo(null);
+      return;
+    }
+
+    bridgeCall("qkBridgeList()", function (data) {
+      if (!data.ok) {
+        bridgeShowSteps(data.steps, data.error);
+        return;
+      }
+      bridge.pending = Array.isArray(data.pending) ? data.pending : [];
+      bridge.returns = Array.isArray(data.returns) ? data.returns : [];
+      bridgeDrawPending();
+      bridgeDrawReturns();
+    });
+
+    if (state.hostId === "AEFT") {
+      bridgeCall("qkBridgeInfo()", function (info) {
+        if (!info || !info.ok) return;
+        bridgeCompInfo(info);
+      });
+    }
+  }
+
+  function bridgeOnShow() {
+    var ppro = document.getElementById("qk-bridge-for-ppro");
+    var aeft = document.getElementById("qk-bridge-for-aeft");
+    if (ppro) ppro.hidden = state.hostId !== "PPRO";
+    if (aeft) aeft.hidden = state.hostId !== "AEFT";
+    bridgeRefresh();
+  }
+
+  function bridgeSend(button) {
+    if (bridge.busy) return;
+    var scope = fieldValue("qk-bridge-scope") || "selection";
+
+    bridgeSetBusy(true);
+    if (button) button.classList.add("is-loading");
+    setStatus("Writing the handoff...");
+
+    bridgeCall("qkBridgeSendToAe(" + qkQuote(scope) + ")", function (data) {
+      bridgeSetBusy(false);
+      if (button) button.classList.remove("is-loading");
+      bridgeShowSteps(data.steps, data.error);
+
+      if (data.ok) {
+        showMessage("ok", data.message || "Handoff written. Open the Bridge tab in After Effects to import it.");
+        setStatus("Handoff written - open After Effects");
+      } else {
+        showMessage("error", bridgeFirstFail(data) || "The handoff could not be written. Nothing changed.");
+        setStatus("Send failed - nothing changed");
+      }
+      bridgeRefresh();
+    });
+  }
+
+  function bridgeImport(id, button) {
+    if (bridge.busy) return;
+
+    bridgeSetBusy(true);
+    if (button) button.classList.add("is-loading");
+    setStatus("Building the composition...");
+
+    bridgeCall("qkBridgeImport(" + qkQuote(id) + ")", function (data) {
+      bridgeSetBusy(false);
+      if (button) button.classList.remove("is-loading");
+      bridgeShowSteps(data.steps, data.error);
+
+      if (data.ok) {
+        showMessage("ok", data.message || "Handoff imported. The composition is open.");
+        setStatus("Handoff imported - composition open");
+      } else {
+        showMessage("error", bridgeFirstFail(data) || "The handoff could not be imported.");
+        setStatus("Import failed - nothing was built");
+      }
+      bridgeRefresh();
+    });
+  }
+
+  function bridgeCancel() {
+    if (!bridge.job) return;
+    var job = bridge.job;
+    bridge.job = null;
+    try {
+      job.cancel();
+    } catch (eCancel) {}
+    bridgeSetBusy(false);
+    bridgeProgressHide();
+    showMessage("error", "Render stopped. Any partial file was left alone; nothing was handed to Premiere Pro.");
+    setStatus("Render stopped");
+  }
+
+  function bridgeFinishRender(plan) {
+    var payload = {
+      output: plan.output,
+      comp: plan.comp,
+      duration: plan.duration,
+      width: plan.width,
+      height: plan.height,
+      frameRate: plan.frameRate,
+      bridgeTalk: true
+    };
+
+    bridgeCall("qkBridgeFinishRender(" + qkQuote(JSON.stringify(payload)) + ")", function (data) {
+      bridgeShowSteps(data.steps, data.error);
+      if (data.ok) {
+        showMessage("ok", data.message || "Rendered. Check the timeline position in Premiere Pro.");
+        setStatus(data.placed ? "Rendered and handed to Premiere Pro" : "Rendered - waiting in returns");
+      } else {
+        showMessage("error", bridgeFirstFail(data) || "The render finished, but the return file could not be written.");
+        setStatus("Render finished - handoff failed");
+      }
+      bridgeRefresh();
+    });
+  }
+
+  function bridgeStartRender(plan) {
+    var mod = bridgeLoadModule();
+    if (!mod) {
+      bridgeSetBusy(false);
+      bridgeProgressHide();
+      showMessage("error", bridge.moduleError);
+      setStatus("Render not started");
+      return;
+    }
+
+    function start(aerenderPath) {
+      if (!aerenderPath) {
+        bridgeSetBusy(false);
+        bridgeProgressHide();
+        showMessage(
+          "error",
+          "aerender.exe was not found on this machine, so QuickKit cannot render in the background. " +
+            "The composition is already queued with its output set: use Composition > Add to Render Queue in After Effects, render it, then import the file in Premiere Pro."
+        );
+        setStatus("No aerender - render it in the Render Queue");
+        return;
+      }
+
+      bridgeProgress(0, "Starting aerender...");
+      setStatus("Rendering...");
+
+      var settled = false;
+      var job = mod.render(
+        { aerender: aerenderPath, project: plan.project, comp: plan.comp, output: plan.output },
+        {
+          onProgress: function (percent) {
+            var value = Number(percent);
+            if (!isFinite(value) || value < 0) return;
+            bridgeProgress(value, "Rendering " + Math.round(value) + "%");
+            setStatus("Rendering " + Math.round(value) + "%");
+          },
+          onDone: function (error) {
+            settled = true;
+            bridge.job = null;
+            bridgeSetBusy(false);
+
+            if (error) {
+              bridgeProgressHide();
+              if (error.code === "cancelled") {
+                showMessage("error", "Render stopped. Any partial file was left alone; nothing was handed to Premiere Pro.");
+                setStatus("Render stopped");
+                return;
+              }
+              showMessage("error", error.message || "The render failed.");
+              setStatus("Render failed - nothing was handed over");
+              return;
+            }
+
+            bridgeProgress(100, "Render finished. Handing the file to Premiere Pro...");
+            setStatus("Render finished - handing over");
+            bridgeFinishRender(plan);
+          }
+        }
+      );
+
+      if (settled) return;
+      bridge.job = job;
+      bridgeSetBusy(true);
+    }
+
+    if (plan.aerender) {
+      start(plan.aerender);
+      return;
+    }
+
+    mod.locate({ afterEffectsPath: "" }, function (error, info) {
+      if (error || !info || !info.ok) {
+        start("");
+        return;
+      }
+      start(String(info.path || ""));
+    });
+  }
+
+  function bridgeRender(button) {
+    if (bridge.busy) return;
+    var format = fieldValue("qk-bridge-format") || "auto";
+
+    bridgeSetBusy(true);
+    if (button) button.classList.add("is-loading");
+    bridgeProgress(0, "Preparing the render...");
+    setStatus("Preparing the render...");
+
+    bridgeCall("qkBridgePrepareRender(" + qkQuote(format) + ")", function (data) {
+      if (button) button.classList.remove("is-loading");
+      bridgeShowSteps(data.steps, data.error);
+
+      if (!data.ok || !data.plan) {
+        bridgeSetBusy(false);
+        bridgeProgressHide();
+        showMessage("error", bridgeFirstFail(data) || "The render could not be prepared. Nothing was rendered.");
+        setStatus("Render not started - nothing was rendered");
+        return;
+      }
+
+      bridgeStartRender(data.plan);
+    });
+  }
+
+  function bridgePlace(id, button) {
+    if (bridge.busy) return;
+
+    bridgeSetBusy(true);
+    if (button) button.classList.add("is-loading");
+    setStatus("Placing the render...");
+
+    bridgeCall("qkBridgePlaceReturn(" + qkQuote(id) + ")", function (data) {
+      bridgeSetBusy(false);
+      if (button) button.classList.remove("is-loading");
+      bridgeShowSteps(data.steps, data.error);
+
+      if (data.ok) {
+        showMessage("ok", data.message || "Placed on the timeline.");
+        setStatus("Render placed on the timeline");
+      } else {
+        showMessage("error", bridgeFirstFail(data) || "The render could not be placed.");
+        setStatus("Place failed - the file is still imported");
+      }
+      bridgeRefresh();
+    });
+  }
+
+  function bindBridge() {
+    var send = document.getElementById("qk-bridge-send");
+    if (send) {
+      send.addEventListener("click", function () {
+        bridgeSend(send);
+      });
+    }
+
+    var render = document.getElementById("qk-bridge-render");
+    if (render) {
+      render.addEventListener("click", function () {
+        bridgeRender(render);
+      });
+    }
+
+    var cancel = document.getElementById("qk-bridge-cancel");
+    if (cancel) cancel.addEventListener("click", bridgeCancel);
+
+    var refresh = document.getElementById("qk-bridge-refresh");
+    if (refresh) refresh.addEventListener("click", bridgeRefresh);
+
+    var refreshAe = document.getElementById("qk-bridge-refresh-aeft");
+    if (refreshAe) refreshAe.addEventListener("click", bridgeRefresh);
+  }
+
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", boot);
   } else {

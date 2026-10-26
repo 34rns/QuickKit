@@ -552,6 +552,126 @@ if (["qkSilenceTargets", "qkSilenceSegments", "qkSilenceMarkers", "qkSilenceClea
 
 if (exists("tests/ffmpeg.test.js")) pass("ffmpeg test suite is present");
 else fail("tests/ffmpeg.test.js is missing");
+
+/* 23. bridge panel (Part 6) */
+var bridgePanel = /<section[^>]*id="qk-panel-bridge"[\s\S]*?<\/section>/.exec(html);
+if (!bridgePanel) {
+  fail("bridge panel #qk-panel-bridge is missing");
+} else {
+  pass("bridge panel is present");
+
+  var bridgeTab = /id:\s*"bridge",[\s\S]{0,240}?panelId:\s*"bridge"/.exec(panelJs);
+  if (!bridgeTab) fail("panel.js bridge tab is not linked to panelId \"bridge\"");
+  else pass("bridge tab is linked to its panel element");
+
+  if (panelJs.indexOf("if (id === \"bridge\") bridgeOnShow();") === -1) {
+    fail("selectTab never calls bridgeOnShow()");
+  } else {
+    pass("selectTab refreshes the bridge panel when the tab opens");
+  }
+
+  if (!/bindBridge\(\);/.test(panelJs)) fail("boot() never calls bindBridge()");
+  else pass("boot() binds the bridge controls");
+
+  if (bridgePanel[0].indexOf('id="qk-bridge-send"') === -1) fail("bridge panel has no Send to After Effects button");
+  else pass("bridge panel has a Send to After Effects button");
+
+  if (bridgePanel[0].indexOf('id="qk-bridge-render"') === -1) fail("bridge panel has no Send back render button");
+  else pass("bridge panel has a Send back render button");
+
+  if (bridgePanel[0].indexOf('id="qk-bridge-cancel"') === -1) fail("bridge panel has no cancel button");
+  else pass("bridge panel can cancel a render");
+
+  if (bridgePanel[0].indexOf('id="qk-bridge-steps"') === -1) fail("bridge panel has no step by step list");
+  else pass("bridge panel shows step by step status");
+
+  if (bridgePanel[0].indexOf("not Dynamic Link") === -1) fail("bridge panel does not say it is a file handoff, not Dynamic Link");
+  else pass("bridge panel is honest about the file handoff");
+
+  ["qk-bridge-pending", "qk-bridge-returns", "qk-bridge-scope", "qk-bridge-format"].forEach(function (id) {
+    if (bridgePanel[0].indexOf('id="' + id + '"') === -1) fail("bridge panel is missing " + id);
+  });
+  if (["qk-bridge-pending", "qk-bridge-returns", "qk-bridge-scope", "qk-bridge-format"].every(function (id) {
+    return bridgePanel[0].indexOf('id="' + id + '"') !== -1;
+  })) {
+    pass("bridge panel lists handoffs, renders, clip scope and format");
+  }
+}
+
+/* 24. every bridge id used by the panel exists in index.html.
+   `qk-bridge-step*` and `qk-bridge-row*` are CSS class names, not ids, so they
+   are skipped; every other qk-bridge-* token in panel.js must be a real id. */
+var bridgeIdsUsed = {};
+var bridgeCssClasses = ["qk-bridge-step", "qk-bridge-row"];
+panelJs.replace(/(qk-bridge-[a-z0-9-]+)/g, function (_, id) {
+  if (id.charAt(id.length - 1) === "-") return _;
+  if (bridgeCssClasses.indexOf(id) !== -1) return _;
+  bridgeIdsUsed[id] = true;
+  return _;
+});
+var bridgeIdsMissing = Object.keys(bridgeIdsUsed).filter(function (id) {
+  return html.indexOf('id="' + id + '"') === -1;
+});
+if (bridgeIdsMissing.length) fail("panel.js uses bridge ids that index.html does not have: " + bridgeIdsMissing.join(", "));
+else pass("all " + Object.keys(bridgeIdsUsed).length + " bridge ids used by the panel exist in index.html");
+
+/* 25. render-node.js is a required module, never a script tag */
+if (!exists("extension/js/render-node.js")) {
+  fail("extension/js/render-node.js is missing");
+} else {
+  pass("render-node.js is present");
+
+  var renderCheck = 0;
+  try {
+    execFileSync(process.execPath, ["--check", path.join(ROOT, "extension/js/render-node.js")], { stdio: "pipe" });
+  } catch (eRenderCheck) {
+    renderCheck = 1;
+  }
+  if (renderCheck) fail("extension/js/render-node.js does not parse");
+  else pass("extension/js/render-node.js parses");
+
+  if (html.indexOf("render-node.js") !== -1) fail("index.html loads render-node.js; it must only be require()d in CEP");
+  else pass("render-node.js is not loaded as a page script");
+
+  if (panelJs.indexOf("render-node.js") === -1) fail("panel.js never requires render-node.js");
+  else pass("panel.js requires render-node.js");
+
+  var renderNode = read("extension/js/render-node.js");
+  if (renderNode.indexOf("child_process") === -1) fail("render-node.js never starts aerender");
+  else pass("render-node.js owns the aerender process");
+
+  if (panelJs.indexOf("child_process") !== -1) fail("panel.js must not start processes itself; that belongs in render-node.js");
+  else pass("bridge process handling stays inside render-node.js");
+}
+
+/* 26. bridge entry points exist in the host */
+var bridgeFns = [
+  "qkBridgeSendToAe",
+  "qkBridgeImport",
+  "qkBridgePrepareRender",
+  "qkBridgeFinishRender",
+  "qkBridgePlaceReturn",
+  "qkBridgeList",
+  "qkBridgeInfo"
+];
+bridgeFns.forEach(function (name) {
+  if (!definedFns[name]) fail("host is missing " + name + "()");
+});
+if (bridgeFns.every(function (name) {
+  return definedFns[name];
+})) {
+  pass("host defines all " + bridgeFns.length + " bridge entry points");
+}
+
+/* 27. the README documents the bridge and its limits */
+var readmeText = exists("README.md") ? read("README.md") : "";
+if (!readmeText) fail("README.md is missing");
+else if (readmeText.indexOf("Dynamic Link") === -1) fail("README.md does not explain that the bridge is not Dynamic Link");
+else if (!/bridge/i.test(readmeText)) fail("README.md has no bridge section");
+else pass("README.md documents the bridge and its Dynamic Link limits");
+
+if (exists("tests/render.test.js")) pass("render test suite is present");
+else fail("tests/render.test.js is missing");
 /* report */
 passes.forEach(function (message) { console.log("PASS  " + message); });
 skips.forEach(function (message) { console.log("SKIP  " + message); });

@@ -166,6 +166,77 @@
           notes: [],
           message: "1 audio clip"
         };
+      } else if (script.indexOf("qkBridgeList") === 0) {
+        /* Layout stand-in: one handoff and one render so both lists can be
+           seen. Nothing touches disk in a browser. */
+        reply = {
+          ok: true,
+          host: premiere ? "PPRO" : "AEFT",
+          pending: [
+            {
+              id: "preview-handoff",
+              file: "C:/Users/Test/AppData/Roaming/QuickKit/bridge/pending/preview-handoff.qkhandoff",
+              created: "2026-10-26 12:00",
+              comp: "QuickKit test sequence",
+              clips: 2,
+              frameRate: 25,
+              width: 1920,
+              height: 1080,
+              duration: 8.5,
+              summary: "Take 1 + 1 more"
+            }
+          ],
+          returns: [
+            {
+              id: "preview-return",
+              file: "C:/Users/Test/AppData/Roaming/QuickKit/bridge/returns/preview-return.qkreturn",
+              created: "2026-10-26 12:05",
+              comp: "QuickKit test sequence",
+              render: "C:/Users/Test/AppData/Roaming/QuickKit/bridge/renders/QuickKit test sequence.mov",
+              duration: 8.5,
+              at: 2,
+              trackName: "V1",
+              summary: "QuickKit test sequence.mov",
+              renderExists: true
+            }
+          ],
+          skipped: 0,
+          folders: {
+            pending: "C:/Users/Test/AppData/Roaming/QuickKit/bridge/pending",
+            returns: "C:/Users/Test/AppData/Roaming/QuickKit/bridge/returns",
+            renders: "C:/Users/Test/AppData/Roaming/QuickKit/bridge/renders"
+          },
+          message: "1 handoff waiting for After Effects, 1 render waiting for Premiere Pro."
+        };
+      } else if (script.indexOf("qkBridgeInfo") === 0) {
+        reply = {
+          ok: true,
+          host: "AEFT",
+          root: "C:/Users/Test/AppData/Roaming/QuickKit/bridge",
+          project: "C:/Projects/QuickKit test.aep",
+          comp: { name: "QuickKit test sequence", width: 1920, height: 1080, frameRate: 25, duration: 8.5 },
+          aerender: "C:/Program Files/Adobe/Adobe After Effects 2026/Support Files/aerender.exe",
+          handoff: false,
+          message: "File handoff, not Dynamic Link."
+        };
+      } else if (script.indexOf("qkBridgeSendToAe") === 0) {
+        reply = {
+          ok: true,
+          id: "preview-handoff",
+          file: "C:/Users/Test/AppData/Roaming/QuickKit/bridge/pending/preview-handoff.qkhandoff",
+          clips: 2,
+          summary: "Take 1 + 1 more",
+          sequence: { name: "QuickKit test sequence", frameRate: 25, width: 1920, height: 1080, start: 2, duration: 8.5 },
+          message: "Wrote a handoff for 2 clips (8.5 s). Open the Bridge tab in After Effects to import it.",
+          steps: [
+            { id: "sequence", label: "Read the active sequence", state: "ok", detail: "Sequence: QuickKit test sequence" },
+            { id: "clips", label: "Find the clips to send", state: "ok", detail: "2 clips from the Timeline selection" },
+            { id: "media", label: "Check the media files", state: "ok", detail: "2 files exist on disk." },
+            { id: "folder", label: "Create the handoff folder", state: "ok", detail: "C:/Users/Test/AppData/Roaming/QuickKit/bridge/pending" },
+            { id: "write", label: "Write the handoff file", state: "ok", detail: "preview-handoff.qkhandoff" },
+            { id: "waiting", label: "Waiting for After Effects", state: "note", detail: "Preview only: nothing was written." }
+          ]
+        };
       } else if (script.indexOf("qkPresetList") === 0) {
         reply = listReply();
       } else if (script.indexOf("qkPresetFavorite") === 0) {

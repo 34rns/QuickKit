@@ -1,8 +1,8 @@
 # HANDOFF — QuickKit
 
 **Read this together with `AGENTS.md`, `PROGRESS.md`, `WORKLOG.md` and the
-relevant `prompts/PROMPT_N.md`.** Last updated: 2026-10-26 (Prompt 6 → Part 5,
-Silence cutter).
+relevant `prompts/PROMPT_N.md`.** Last updated: 2026-10-26 (Prompt 7 → Part 6,
+Bridge between Premiere Pro and After Effects).
 
 ---
 
@@ -12,10 +12,10 @@ QuickKit is a **free, local-only CEP extension** for Adobe After Effects and
 Premiere Pro: an HTML/JS panel plus an ExtendScript (`.jsx`) host, one manifest
 targeting both apps, Windows 10/11 only, no network at runtime.
 
-Current version: **0.5.0** (Parts 0–5 done: shell, AE core tools, text
-animations, preset manager, Premiere silence cutter). Everything that touches
-the real app is still `UNTESTED` until the manual checklists in `docs/` are
-walked through.
+Current version: **0.6.0** (Parts 0–6 done: shell, AE core tools, text
+animations, preset manager, Premiere silence cutter, Premiere ⇄ After Effects
+bridge). Everything that touches the real app is still `UNTESTED` until the
+manual checklists in `docs/` are walked through.
 
 ## 2. Architecture
 
@@ -25,9 +25,20 @@ walked through.
 │ panel: index.html, panel.js, │ ◄───────────────────────────── │ ExtendScript in AE/PPro  │
 │ csinterface-lite.js bridge)  │        JSON string reply       │ every public fn = qk*()  │
 └──────────────┬───────────────┘                                └──────────────────────────┘
-               │ require() + child_process (Premiere only)
+               │ require() + child_process
                ▼
-      js/ffmpeg-node.js ──spawn(argv, no shell)──► bin/ffmpeg/ffmpeg.exe
+      js/ffmpeg-node.js ──spawn(argv, no shell)──► bin/ffmpeg/ffmpeg.exe      (Silence tab)
+      js/render-node.js ──spawn(argv, no shell)──► …\Adobe After Effects 2026\Support Files\aerender.exe
+                                                                              (Bridge render)
+```
+
+**Bridge file handoff** (`%APPDATA%\QuickKit\bridge\`):
+
+```
+pending\<id>.qkhandoff   Premiere writes  →  After Effects imports (then moves to imported\)
+imports\<comp>.json      AE remembers the original timeline position for that comp
+renders\<comp>.<ext>     aerender writes the finished file
+returns\<id>.qkreturn    AE writes     →  Premiere's Place button (then moves to placed\)
 ```
 
 - **Panel → host:** `extension/js/csinterface-lite.js` is an original minimal
@@ -48,10 +59,16 @@ walked through.
   `%APPDATA%\Adobe\CEP\extensions\QuickKit`, writes `PlayerDebugMode=1`, and
   verifies byte-for-byte.
 - **FFmpeg (Premiere only):** `extension/js/ffmpeg-node.js` is loaded with
-  `require()` from the panel, never a `<script>` tag, and is the only file that
-  touches `child_process`. Every run is `spawn(path, [args])` — no shell, so
-  spaces and non-English characters need no quoting. The manifest passes
+  `require()` from the panel, never a `<script>` tag, and is one of only two
+  files that touch `child_process` (the other is `render-node.js`, the Bridge
+  render engine). Every run is `spawn(path, [args])` — no shell, so spaces and
+  non-English characters need no quoting. The manifest passes
   `--enable-nodejs` and `--mixed-context` so `require` exists in CEP.
+- **Bridge:** the host writes/reads JSON files through `File`/`Folder`; the
+  panel only renders `steps[]` and drives `aerender` through `render-node.js`.
+  Every bridge entry point returns `{ok, steps:[{id,label,state,detail}], …}`
+  so the same list is used for the panel readout and the failure message. No
+  host call ever claims the other app did something it did not.
 
 ## 3. File map
 
@@ -64,27 +81,29 @@ walked through.
 | `WORKLOG.md` | Reverse-chronological journal, one line per edit/step. |
 | `prompts/PROMPT_N.md` | Verbatim prompt archive with status headers. |
 | `README.md` | Public-facing docs: what works, install (3 steps), troubleshooting, privacy. |
-| `extension/CSXS/manifest.xml` | One manifest, `HostList` = AEFT + PPRO, `[22.0,99.9]`, version 0.5.0, CEF `--enable-nodejs` + `--mixed-context`. |
-| `extension/index.html` | Panel markup: header, host block, 7 tabs, one `<section>` per tool, dialogs, tooltip, status strip. |
-| `extension/js/panel.js` | All panel logic (~2950 lines): tabs, tooltips, welcome, per-tool wiring, presets UI, WAAPI text preview, silence tab. |
+| `extension/CSXS/manifest.xml` | One manifest, `HostList` = AEFT + PPRO, `[22.0,99.9]`, version 0.6.0, CEF `--enable-nodejs` + `--mixed-context`. |
+| `extension/index.html` | Panel markup: header, host block, 7 tabs, one `<section>` per tool (incl. `#qk-panel-bridge`), dialogs, tooltip, status strip. |
+| `extension/js/panel.js` | All panel logic (~3050 lines): tabs, tooltips, welcome, per-tool wiring, presets UI, WAAPI text preview, silence tab, bridge tab. |
 | `extension/js/csinterface-lite.js` | The bridge (`window.__qk.call`). |
-| `extension/js/ffmpeg-node.js` | Node side of the Silence tool: `locate`, `probe`, `detect`, `peaks`, `cancel`, parsers, `PeakBuilder`. Only file that starts a process. |
+| `extension/js/ffmpeg-node.js` | Node side of the Silence tool: `locate`, `probe`, `detect`, `peaks`, `cancel`, parsers, `PeakBuilder`. One of two files that start a process. |
+| `extension/js/render-node.js` | Node side of the Bridge render: `locate`/`probe` for `aerender.exe`, `parseVersion`/`parseProgress`/`classifyFailure`, `spawnJob` (line streaming + `cancel()`), `render()`. Real output tested against `aerender 26.5x89`. |
 | `extension/css/panel.css` | Shell: grid, header, tabs, status, tooltip, welcome, dialogs. |
-| `extension/css/tools.css` | Tool panels: anchors, transforms, easing, text, presets, silence (waveform, progress, segment list), message strip. |
-| `host/quickkit.jsx` | The entire host (~4990 lines): helpers, host info, anchor, layers, easing, text engine, preset store, Premiere silence cutter (`qkSilence*`). Marked sections; `$.evalFile` split deliberately avoided. |
+| `extension/css/tools.css` | Tool panels: anchors, transforms, easing, text, presets, silence (waveform, progress, segment list), bridge (cards, lists, step dots), message strip. |
+| `host/quickkit.jsx` | The entire host (~5780 lines): helpers, host info, anchor, layers, easing, text engine, preset store, Premiere silence cutter (`qkSilence*`), bridge (`qkBridge*`). Marked sections; `$.evalFile` split deliberately avoided. |
 | `bin/ffmpeg/` | `NOTICE.txt` + `README.txt` (tracked); `ffmpeg.exe`, `ffprobe.exe`, `VERSION.txt` fetched per machine and **gitignored**. |
-| `design/tokens.css` | ~115 tokens: dark theme, single accent `#7C5CFF`. Only place raw colours/fonts/radii live. |
+| `design/tokens.css` | 126 tokens: dark theme, single accent `#7C5CFF`. Only place raw colours/fonts/radii live. |
 | `design/DESIGN_SYSTEM.md` | The binding visual spec (states, spacing, typography). |
 | `design/icons/icons.js` | Original 16×16 icon set, `QKIcons.svg()`. |
 | `design/fonts/*` | Bundled Inter (OFL), logged in `docs/ASSET_LICENSES.md`. |
 | `scripts/install.bat`, `scripts/uninstall.bat` | Copy/clean the extension folder, toggle `PlayerDebugMode`. |
 | `scripts/fetch-ffmpeg.ps1` | Copies a local `ffmpeg.exe` (and `ffprobe.exe`) into `bin\ffmpeg\`, writes `VERSION.txt` with the build string and the detected licence. |
-| `tests/check-static.js` | 55 static checks incl. the **ES3 reserved-word scan**, the no-network check, and the silence/ffmpeg/manifest assertions. |
-| `tests/host-logic.test.js` | 89 mock-host tests (mock AE object model **and** a mock Premiere world; no Adobe apps needed). |
+| `tests/check-static.js` | 75 static checks incl. the **ES3 reserved-word scan**, the no-network check, and the silence/ffmpeg/bridge/manifest assertions (bridge checks 23–27). |
+| `tests/host-logic.test.js` | 104 mock-host tests (mock AE object model, mock AE bridge project with render queue, **and** a mock Premiere world; no Adobe apps needed). |
+| `tests/render.test.js` | 12 checks against the real `aerender.exe`: version/progress parsing, `spawnJob` streaming + cancel, error classification, discovery, and the real error text for a bad project. Skips the real runs when AE is absent. |
 | `tests/ffmpeg.test.js` | 20 checks against the real `ffmpeg.exe`, including a generated WAV in a path with spaces and 中文; skips the real runs when no binary is found. |
-| `tests/.preview/` | Fake-CEP harness: `fake-cep.js` stubs `__qk.call` (AEFT by default, PPRO with `?host=PPRO`), plus a copy of the panel served on 127.0.0.1 for browser checks. |
+| `tests/.preview/` | Fake-CEP harness: `fake-cep.js` stubs `__qk.call` (AEFT by default, PPRO with `?host=PPRO`), including bridge stand-ins, plus a copy of the panel served on 127.0.0.1 for browser checks. |
 | `tests/refresh-preview.js` | Rebuilds `tests/.preview` from `extension/`, `design/tokens.css` and `design/icons/`, injecting the `fake-cep.js` script tag. Run it after any panel change. |
-| `docs/manual-test-checklist-part{1..5}.md` | Manual test lists for the real apps. |
+| `docs/manual-test-checklist-part{1..6}.md` | Manual test lists for the real apps. |
 | `docs/releasing.md`, `release.ps1`, `quickkit.zip` | Release flow and artifact. |
 
 ## 4. Key decisions and why
@@ -127,6 +146,30 @@ walked through.
     own ripple, and let one piece carry the ripple. **Mute in place** exists
     because ExtendScript cannot move a clip to another track: razor, then set
     the Volume control to −96 dB, keeping the sequence length.
+12. **Bridge renders with `aerender`, not the Render Queue** —
+    `app.project.renderQueue.render()` runs inside ExtendScript and blocks
+    `evalScript`, so the panel would freeze with no progress and a Cancel that
+    cannot work. `aerender` is a separate process: stdout is parsed for
+    percentages, Cancel kills the child. The comp is still queued with its
+    output module set, which `aerender -comp` reuses and a user can render by
+    hand if the binary is missing.
+13. **Bridge is a file handoff, not Dynamic Link** — a script cannot create a
+    Dynamic Link comp. The handoff is JSON, the return is ordinary media, and
+    both the panel and README say so. Nothing stays linked.
+14. **Templates are verified before rendering** — candidate order is
+    QuickTime, Lossless, `H.264 - Match Render Settings - 15 Mbps`,
+    `Apple ProRes 422 HQ`, `Apple ProRes 422`, `H.264`, `Lossless with Alpha`;
+    the first `applyTemplate` that does not throw wins and sets the extension.
+    None found is a specific failure, never a silent H.264.
+15. **Bridge comp maths** — comp time 0 = earliest clip start;
+    `layer.startTime = -inPoint + (sequenceStart − earliest)`, `inPoint`/
+    `outPoint` bound the used range, `stretch = 100/speed` when speed ≠ 100.
+    The original position is stored in `imports\<comp>.json` so the return
+    lands on the same start and video track.
+16. **Cross-app hand-off is honest by construction** — BridgeTalk is used only
+    when `premierepro` is in `BridgeTalk.getTargets()`; otherwise the
+    `.qkreturn` waits in `returns\` and Premiere's **Place** button finishes
+    it. The panel reports `placed` from the host reply, never assumed.
 
 ## 5. Known bugs and gotchas
 
@@ -160,10 +203,30 @@ walked through.
   text/shape layers, parenting, precompose, preset capture/apply, text style
   mutation, effect parameter paths, modal file dialogs, undo granularity,
   every Premiere call in the silence tool (QE razor, `item.remove(true,true)`,
-  marker colour, Volume muting, `getSelection`), and the panel drawing inside
+  marker colour, Volume muting, `getSelection`), the whole bridge in the real
+  apps (`ImportOptions`/`importFile` visually, `comp.layers.add` trim
+  behaviour, `renderQueue.items.add` + `outputModule.applyTemplate`,
+  `app.project.save`, a real comp rendered by `aerender`, `app.project
+  .importFiles`, `overwriteClip`, BridgeTalk), and the panel drawing inside
   real CEP. The panel itself **was** re-checked in the browser preview during
-  Part 5 (both `?host=PPRO` and `?host=AEFT`, no console errors) — that proves
-  the markup, CSS and JS wiring, not CEP's own rendering.
+  Parts 5 and 6 (both `?host=PPRO` and `?host=AEFT`, no console messages) —
+  that proves the markup, CSS and JS wiring, not CEP's own rendering.
+- **The bridge mocks are models, not the apps.** `installAeBridge()` models
+  `items.addComp`, `importFile`, `renderQueue.items.add`, `applyTemplate` and
+  `save`; `createPremiereWorld({bridge:true})` models `importFiles`,
+  `overwriteClip` and `insertClip`. They prove the maths, the branch order and
+  the undo pairing. A real difference (e.g. `overwriteClip` refusing an
+  unsynced track) belongs in `qkBridgePlace*` **and** the mock together.
+- **The bridge needs a saved After Effects project.** `aerender` opens the
+  project from disk; an unsaved project is refused before any render starts.
+- **A renamed comp loses its return position.** The position is keyed by the
+  lowercased comp name written at import; renaming the comp afterwards means
+  the return finds no record and Premiere places it at 0 s (checklist §D26).
+- **Multi-clip handoffs come back flattened.** One render, placed at the first
+  clip's start and video track; anything under it is overwritten. Documented,
+  not a bug.
+- **`aerender` exiting 15 for `-version` is normal.** `render-node.js` parses
+  stdout instead of trusting the exit code; do not "fix" that.
 - **The silence mock is a model, not Premiere.** `createPremiereWorld()` in
   `tests/host-logic.test.js` implements razor as "split the clip at that time",
   ripple as "shift everything starting at or after the removed piece left", and
@@ -183,15 +246,17 @@ walked through.
 ## 6. How to run and test
 
 ```bash
-# automated — all three must pass, exit 0
-node tests/check-static.js        # 55 checks: structure, versions, ES3 scan, no-network, silence wiring
-node tests/host-logic.test.js     # 89 mock-host tests (mock AE + mock Premiere), no apps needed
+# automated — all four must pass, exit 0
+node tests/check-static.js        # 75 checks: structure, versions, ES3 scan, no-network, silence + bridge wiring
+node tests/host-logic.test.js     # 104 mock-host tests (mock AE, mock AE bridge, mock Premiere), no apps needed
+node tests/render.test.js         # 12 checks against the real aerender.exe (skips real runs if AE absent)
 node tests/ffmpeg.test.js         # 20 checks against the real ffmpeg (skips real runs if absent)
 
 # syntax spot-check (copy first — Node rejects .jsx)
 cp host/quickkit.jsx /tmp/qk.js && node --check /tmp/qk.js
 node --check extension/js/panel.js
 node --check extension/js/ffmpeg-node.js
+node --check extension/js/render-node.js
 
 # put a binary in bin\ffmpeg\ (once per machine), then install
 powershell -ExecutionPolicy Bypass -File scripts\fetch-ffmpeg.ps1
@@ -201,29 +266,35 @@ cmd //c "scripts\\install.bat"    # then restart AE/PPro: Window > Extensions > 
 node tests/refresh-preview.js                     # copies the panel into tests/.preview
 cd tests/.preview && python -m http.server 8752   # open http://127.0.0.1:8752/index.html
 # fake-cep.js stubs window.__qk.call; append ?host=PPRO for the Premiere side
-# (in a browser there is no Node, so the Silence tab shows that message — expected)
+# (in a browser there is no Node, so the Silence and Bridge tabs say so — expected)
 ```
 
-Real-app verification = walk `docs/manual-test-checklist-part5.md` (silence) and
-`part4` (presets), then parts 1–3. Report each item's number, expected result
-and what actually happened.
+Real-app verification = walk `docs/manual-test-checklist-part6.md` (bridge),
+`part5` (silence) and `part4` (presets), then parts 1–3. Report each item's
+number, expected result and what actually happened.
 
 ## 7. Next 3 concrete actions
 
-0. **Status as of 2026-10-26 14:05 — no code work is outstanding.** Prompts 1–6
-   are all `DONE` in `PROGRESS.md` and in `prompts/PROMPT_N.md`; all three
-   suites are green (55 / 89 / 20). What is left is manual, and needs a human in
-   the apps.
+0. **Status as of 2026-10-26 (Prompt 7 closeout) — no code work is
+   outstanding.** Prompts 1–7 are all `DONE` in `PROGRESS.md` and in
+   `prompts/PROMPT_N.md`; all four suites are green (75 / 104 / 12 / 20);
+   `scripts\install.bat` installed 0.6.0 and the panel was re-checked in the
+   browser preview in both host modes with no console messages. What is left is
+   manual, and needs a human in the apps.
 
-1. **Run `docs/manual-test-checklist-part5.md` in Premiere Pro 26.0.2** — the
-   four required cases (short clip, one-hour clip, no silence, no audio) plus
-   multi-track, linked video and the unicode path. Everything Premiere-side is
-   `UNTESTED` until then. Fill in the Results table at the bottom of the file
-   and copy the timings into this handoff.
-2. **Run `docs/manual-test-checklist-part4.md` in After Effects 26.5** if it is
-   still unwalked; the connection fix and preset capture/apply are `UNTESTED`.
-3. **If any item fails, fix and re-run all three suites** — for a host error
-   start with `node tests/check-static.js` (a single ExtendScript reserved word
-   silently kills every host function). For a razor/ripple difference, change
-   `qkSilence*` **and** the mock in `tests/host-logic.test.js` together, then
-   record the real behaviour here.
+1. **Run `docs/manual-test-checklist-part6.md` (Bridge) with Premiere Pro
+   26.0.2 and After Effects 26.5 both open** — send a handoff from a real
+   sequence, import it in AE, render with `aerender`, place the render back on
+   the timeline. This is the newest and least proven area: every Premiere/AE
+   call in it is `UNTESTED`. Copy the outcome (and any timings) into this file.
+2. **Run `docs/manual-test-checklist-part5.md` (Silence) in Premiere Pro** —
+   the four required cases (short clip, one-hour clip, no silence, no audio)
+   plus multi-track, linked video and the unicode path; then
+   `part4` (presets) in After Effects if still unwalked.
+3. **If any item fails, fix one part at a time and re-run all four suites** —
+   for a host error start with `node tests/check-static.js` (a single
+   ExtendScript reserved word silently kills every host function); for a
+   razor/ripple difference change `qkSilence*` **and** the mock together; for a
+   bridge difference change `qkBridge*` **and** `installAeBridge()` /
+   `createPremiereWorld({bridge:true})` together. Re-run `scripts\install.bat`
+   before the retest and record the real behaviour here.

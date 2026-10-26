@@ -191,6 +191,15 @@
   --qk-range-h: 4px;
   --qk-range-knob: 12px;
 
+  /* Bridge (Part 6) */
+  --qk-bridge-card-bg: var(--qk-surface);
+  --qk-bridge-row-bg: var(--qk-surface-raised);
+  --qk-bridge-note-border: var(--qk-border-strong);
+  --qk-bridge-list-max: 168px;
+  --qk-bridge-step-dot: 6px;
+  --qk-bridge-step-gutter: 14px;
+  --qk-bridge-step-offset: 5px;
+
   /* Layers */
   --qk-z-tooltip: 40;
   --qk-z-overlay: 30;

@@ -671,14 +671,153 @@ Object.defineProperty(MockFolder.prototype, "parent", {
   }
 });
 
-function createWorld(comp) {
+/* Bridge stand-in for the After Effects project: just enough of the item model,
+   render queue and output module for the bridge code to run. */
+function installAeBridge(app, options) {
+  var opts = options || {};
+  var failTemplates = opts.failTemplates || [];
+  var state = {
+    items: [],
+    comps: [],
+    queue: [],
+    imported: [],
+    saves: 0,
+    templates: [],
+    settings: [],
+    sent: [],
+    outputFile: null
+  };
+
+  function makeComp(name, width, height, duration, frameRate) {
+    var comp = {
+      name: name,
+      typeName: "Composition",
+      width: width,
+      height: height,
+      duration: duration,
+      frameRate: frameRate,
+      opened: 0,
+      layers: {
+        added: [],
+        add: function (item) {
+          var layer = {
+            name: item && item.name ? item.name : "Layer",
+            source: item,
+            startTime: 0,
+            inPoint: 0,
+            outPoint: 0,
+            stretch: 100,
+            index: this.added.length + 1
+          };
+          this.added.push(layer);
+          return layer;
+        }
+      }
+    };
+    comp.openInViewer = function () {
+      comp.opened++;
+    };
+    state.comps.push(comp);
+    state.items.push(comp);
+    return comp;
+  }
+
+  var items = (app.project.items = app.project.items || {});
+  items.addComp = function (name, width, height, pixelAspect, duration, frameRate) {
+    var comp = makeComp(name, width, height, duration, frameRate);
+    app.project.activeItem = comp;
+    return comp;
+  };
+
+  app.project.item = function (index) {
+    return state.items[index - 1] || null;
+  };
+
+  Object.defineProperty(app.project, "numItems", {
+    get: function () {
+      return state.items.length;
+    }
+  });
+
+  app.project.importFile = function (importOptions) {
+    var file = importOptions && importOptions.file ? importOptions.file : null;
+    var item = {
+      name: file ? mockBaseName(file.fsName) : "footage",
+      typeName: "Footage",
+      file: file
+    };
+    state.items.push(item);
+    state.imported.push(item);
+    return item;
+  };
+
+  app.project.save = function () {
+    state.saves++;
+  };
+
+  var queue = state.queue;
+  var queueList = new Proxy(
+    {},
+    {
+      get: function (target, prop) {
+        if (prop === "length") return queue.length;
+        if (prop === "add") {
+          return function (comp) {
+            var module = null;
+            var item = {
+              comp: comp,
+              index: queue.length + 1,
+              settings: "",
+              applyTemplate: function (name) {
+                this.settings = name;
+                state.settings.push(name);
+              },
+              outputModule: function () {
+                return module;
+              },
+              remove: function () {
+                var at = queue.indexOf(item);
+                if (at >= 0) queue.splice(at, 1);
+              }
+            };
+            module = {
+              template: "",
+              file: null,
+              applyTemplate: function (name) {
+                if (failTemplates.indexOf(name) >= 0) throw new Error("template " + name + " is not available");
+                this.template = name;
+                state.templates.push(name);
+              }
+            };
+            item.outputModule = function () {
+              return module;
+            };
+            queue.push(item);
+            return item;
+          };
+        }
+        if (typeof prop === "string" && /^[0-9]+$/.test(prop)) return queue[Number(prop) - 1];
+        return target[prop];
+      }
+    }
+  );
+
+  app.project.renderQueue = { items: queueList };
+  return state;
+}
+
+function createWorld(comp, options) {
+  var opts = options || {};
   var undo = { open: 0, close: 0, names: [] };
-  var fs = new MockFileSystem();
+  var fs = opts.fs || new MockFileSystem();
 
   var app = {
     version: "26.5",
     build: "26.5.0",
-    project: { activeItem: comp, file: { name: "test.aep" } },
+    project: {
+      activeItem: comp,
+      file: opts.projectFile !== undefined ? opts.projectFile : { name: "test.aep", fsName: "C:/Projects/test.aep" }
+    },
     beginUndoGroup: function (name) {
       undo.open++;
       undo.names.push(name);
@@ -687,6 +826,12 @@ function createWorld(comp) {
       undo.close++;
     }
   };
+
+  var aeBridge = null;
+  if (opts.bridge) {
+    app.path = opts.appPath || "C:/Program Files/Adobe/Adobe After Effects 2026/Support Files";
+    aeBridge = installAeBridge(app, opts);
+  }
 
   function FileCtor(path) {
     return new MockFile(fs, path);
@@ -706,11 +851,30 @@ function createWorld(comp) {
   FolderCtor.userData = new MockFolder(fs, "C:/Users/Test/AppData/Roaming");
   FolderCtor.current = new MockFolder(fs, "C:/Users/Test/Desktop");
 
+  function BridgeTalkCtor() {
+    this.target = "";
+    this.body = "";
+    this.sent = false;
+  }
+  BridgeTalkCtor.appName = "aftereffects";
+  BridgeTalkCtor.getTargets = function () {
+    return opts.premiereRunning ? ["aftereffects", "premierepro"] : ["aftereffects"];
+  };
+  BridgeTalkCtor.prototype.send = function () {
+    this.sent = true;
+    BridgeTalkCtor.instances.push(this);
+    return true;
+  };
+  BridgeTalkCtor.instances = [];
+
   var sandbox = {
     app: app,
-    BridgeTalk: { appName: "aftereffects" },
+    BridgeTalk: opts.bridge ? BridgeTalkCtor : { appName: "aftereffects" },
     File: FileCtor,
     Folder: FolderCtor,
+    ImportOptions: function (file) {
+      this.file = file;
+    },
     KeyframeEase: function (speed, influence) {
       this.speed = speed;
       this.influence = influence;
@@ -725,7 +889,14 @@ function createWorld(comp) {
   vm.createContext(sandbox);
   vm.runInContext(SOURCE, sandbox, { filename: "quickkit.jsx" });
 
-  return { sandbox: sandbox, undo: undo, app: app, fs: fs };
+  return {
+    sandbox: sandbox,
+    undo: undo,
+    app: app,
+    fs: fs,
+    bridge: aeBridge,
+    bridgeTalk: sandbox.BridgeTalk
+  };
 }
 
 function expectPoint(rect, cell) {
@@ -1851,6 +2022,7 @@ function createPremiereWorld(options) {
   var opts = options || {};
   var undo = { open: 0, close: 0, names: [] };
   var nodeCounter = 0;
+  var fs = opts.fs || new MockFileSystem();
 
   var world = {
     undo: undo,
@@ -1860,7 +2032,9 @@ function createPremiereWorld(options) {
     razorTimes: [],
     selection: [],
     qeEnabled: false,
-    markers: []
+    markers: [],
+    imported: [],
+    placed: []
   };
 
   function liveList(list) {
@@ -2012,6 +2186,17 @@ function createPremiereWorld(options) {
     }
   };
 
+  if (opts.bridge) {
+    sequence.frameSizeHorizontal = opts.width || 1920;
+    sequence.frameSizeVertical = opts.height || 1080;
+  }
+
+  var rootChildren = [];
+  var rootItem = {
+    name: "root",
+    children: liveList(rootChildren)
+  };
+
   var qeSequence = {
     getAudioTrackAt: function (index) {
       return {
@@ -2041,7 +2226,22 @@ function createPremiereWorld(options) {
     version: "26.0.2",
     project: {
       activeSequence: opts.noSequence ? null : sequence,
-      file: { name: "silence.prproj" }
+      file: { name: "silence.prproj" },
+      rootItem: rootItem,
+      importFiles: function (paths) {
+        (paths || []).forEach(function (renderPath) {
+          var item = {
+            name: mockBaseName(renderPath),
+            children: null,
+            getMediaPath: function () {
+              return renderPath;
+            }
+          };
+          rootChildren.push(item);
+          world.imported.push(item);
+        });
+        return true;
+      }
     },
     enableQE: function () {
       world.qeEnabled = true;
@@ -2055,12 +2255,22 @@ function createPremiereWorld(options) {
     }
   };
 
+  function FileCtor(path) {
+    return new MockFile(fs, path);
+  }
+
+  function FolderCtor(path) {
+    return new MockFolder(fs, path);
+  }
+  FolderCtor.userData = new MockFolder(fs, "C:/Users/Test/AppData/Roaming");
+  FolderCtor.current = new MockFolder(fs, "C:/Users/Test/Desktop");
+
   var sandbox = {
     app: app,
     qe: qe,
     BridgeTalk: { appName: "premierepro" },
-    File: function () {},
-    Folder: function () {},
+    File: opts.bridge ? FileCtor : function () {},
+    Folder: opts.bridge ? FolderCtor : function () {},
     parseFloat: parseFloat,
     parseInt: parseInt,
     isNaN: isNaN
@@ -2086,6 +2296,14 @@ function createPremiereWorld(options) {
   world.addVideoTrack = function (name) {
     var track = { name: name, _clips: [] };
     track.clips = liveList(track._clips);
+    track.overwriteClip = function (item, seconds) {
+      world.placed.push({ item: item, at: seconds, track: name, mode: "overwrite" });
+      return true;
+    };
+    track.insertClip = function (item, seconds) {
+      world.placed.push({ item: item, at: seconds, track: name, mode: "insert" });
+      return true;
+    };
     world.videoTracks.push(track);
     return track;
   };
@@ -2397,7 +2615,426 @@ test("apply rejects an unknown mode and an empty segment list", function () {
   assert.strictEqual(world.undo.open, 0, "a rejected request changes nothing");
 });
 
-/* ---------------- report ---------------- */
+/* ---------------- bridge ---------------- */
+
+var BRIDGE_PENDING = "C:/Users/Test/AppData/Roaming/QuickKit/bridge/pending";
+var BRIDGE_RETURNS = "C:/Users/Test/AppData/Roaming/QuickKit/bridge/returns";
+var BRIDGE_IMPORTS = "C:/Users/Test/AppData/Roaming/QuickKit/bridge/imports";
+
+function bridgeHandoff(overrides) {
+  var base = {
+    format: "quickkit-handoff",
+    version: 1,
+    id: "h1",
+    created: "2026-10-26 12:00",
+    sequence: { name: "My Sequence", frameRate: 25, width: 1920, height: 1080, start: 2, duration: 4 },
+    clips: [
+      {
+        name: "Clip A",
+        path: "C:/Media/a.mov",
+        track: 0,
+        trackName: "V1",
+        video: true,
+        sequenceStart: 2,
+        sequenceEnd: 6,
+        duration: 4,
+        inPoint: 1.5,
+        outPoint: 5.5,
+        speed: 1,
+        mediaExists: true
+      }
+    ]
+  };
+  var key;
+  for (key in overrides || {}) {
+    if (overrides.hasOwnProperty(key)) base[key] = overrides[key];
+  }
+  return base;
+}
+
+function writeBridgeFile(fs, folder, name, record) {
+  fs.folders[folder] = true;
+  fs.files[folder + "/" + name] = typeof record === "string" ? record : JSON.stringify(record);
+}
+
+test("bridge sends a handoff with the used range and sequence format", function () {
+  var fs = new MockFileSystem();
+  fs.files["C:/Media/a.mov"] = "media";
+  var world = createPremiereWorld({ bridge: true, fs: fs, name: "My Sequence" });
+  var track = world.addVideoTrack("V1");
+  world.addClip(track, { name: "Clip A", path: "C:/Media/a.mov", start: 2, end: 6, inPoint: 1.5 });
+
+  var result = JSON.parse(world.sandbox.qkBridgeSendToAe("sequence"));
+
+  assert.strictEqual(result.ok, true, JSON.stringify(result.steps));
+  assert.strictEqual(result.clips, 1);
+  assert.ok(result.file.indexOf("/QuickKit/bridge/pending/") >= 0, result.file);
+
+  var handoff = JSON.parse(fs.files[result.file]);
+  assert.strictEqual(handoff.format, "quickkit-handoff");
+  assert.strictEqual(handoff.sequence.name, "My Sequence");
+  assert.strictEqual(handoff.sequence.frameRate, 25);
+  assert.strictEqual(handoff.sequence.width, 1920);
+  assert.strictEqual(handoff.sequence.height, 1080);
+  close(handoff.sequence.start, 2, "handoff start");
+  close(handoff.sequence.duration, 4, "handoff duration");
+  assert.strictEqual(handoff.clips[0].name, "Clip A");
+  assert.strictEqual(handoff.clips[0].path, "C:/Media/a.mov");
+  close(handoff.clips[0].inPoint, 1.5, "clip in point");
+  close(handoff.clips[0].outPoint, 5.5, "clip out point");
+  assert.ok(handoff.note.indexOf("not Dynamic Link") >= 0, "handoff says what it is");
+});
+
+test("bridge sends only the selected clips when a selection is asked for", function () {
+  var fs = new MockFileSystem();
+  fs.files["C:/Media/a.mov"] = "media";
+  fs.files["C:/Media/b.mov"] = "media";
+  var world = createPremiereWorld({ bridge: true, fs: fs });
+  var track = world.addVideoTrack("V1");
+  world.addClip(track, { name: "Clip A", path: "C:/Media/a.mov", start: 0, end: 2 });
+  var chosen = world.addClip(track, { name: "Clip B", path: "C:/Media/b.mov", start: 4, end: 7 });
+  world.selection = [chosen];
+
+  var result = JSON.parse(world.sandbox.qkBridgeSendToAe("selection"));
+
+  assert.strictEqual(result.ok, true, JSON.stringify(result.steps));
+  var handoff = JSON.parse(fs.files[result.file]);
+  assert.strictEqual(handoff.clips.length, 1);
+  assert.strictEqual(handoff.clips[0].name, "Clip B");
+  close(handoff.sequence.start, 4, "handoff starts at the selected clip");
+});
+
+test("bridge send explains a missing sequence and missing media", function () {
+  var noSequence = createPremiereWorld({ bridge: true, noSequence: true });
+  var missing = JSON.parse(noSequence.sandbox.qkBridgeSendToAe("sequence"));
+  assert.strictEqual(missing.ok, false);
+  assert.ok(/No open sequence/.test(missing.steps[0].detail), missing.steps[0].detail);
+
+  var fs = new MockFileSystem();
+  var world = createPremiereWorld({ bridge: true, fs: fs });
+  var track = world.addVideoTrack("V1");
+  world.addClip(track, { name: "Offline", path: "C:/Media/gone.mov", start: 0, end: 2 });
+
+  var offline = JSON.parse(world.sandbox.qkBridgeSendToAe("sequence"));
+  assert.strictEqual(offline.ok, false);
+  assert.ok(/Every clip is offline/.test(offline.steps[offline.steps.length - 1].detail), JSON.stringify(offline.steps));
+  assert.strictEqual(Object.keys(fs.files).length, 0, "nothing was written");
+});
+
+test("bridge import builds a comp and trims the layer to the used range", function () {
+  var fs = new MockFileSystem();
+  fs.files["C:/Media/a.mov"] = "media";
+  writeBridgeFile(fs, BRIDGE_PENDING, "h1.qkhandoff", bridgeHandoff());
+
+  var world = createWorld(null, { bridge: true, fs: fs });
+  var result = JSON.parse(world.sandbox.qkBridgeImport("h1"));
+
+  assert.strictEqual(result.ok, true, JSON.stringify(result.steps));
+  assert.strictEqual(world.bridge.comps.length, 1);
+
+  var comp = world.bridge.comps[0];
+  assert.strictEqual(comp.name, "My Sequence");
+  assert.strictEqual(comp.width, 1920);
+  assert.strictEqual(comp.height, 1080);
+  assert.strictEqual(comp.frameRate, 25);
+  close(comp.duration, 4, "comp duration");
+
+  var layer = comp.layers.added[0];
+  close(layer.startTime, -1.5, "layer start time");
+  close(layer.inPoint, 0, "layer in point");
+  close(layer.outPoint, 4, "layer out point");
+
+  var record = JSON.parse(fs.files[BRIDGE_IMPORTS + "/my sequence.json"]);
+  assert.strictEqual(record.format, "quickkit-import");
+  assert.strictEqual(record.comp, "My Sequence");
+  close(record.place.start, 2, "remembered start");
+  assert.strictEqual(record.place.track, 0);
+  assert.strictEqual(record.place.trackName, "V1");
+
+  assert.ok(fs.files[BRIDGE_PENDING + "/h1.qkhandoff"] === undefined, "handoff filed away");
+  assert.ok(fs.files[BRIDGE_IMPORTS.replace("imports", "imported") + "/h1.qkhandoff"], "handoff archived");
+});
+
+test("bridge import keeps later clips on their timeline offsets and speed", function () {
+  var fs = new MockFileSystem();
+  fs.files["C:/Media/a.mov"] = "media";
+  fs.files["C:/Media/b.mov"] = "media";
+  var handoff = bridgeHandoff();
+  handoff.clips.push({
+    name: "Clip B",
+    path: "C:/Media/b.mov",
+    track: 0,
+    trackName: "V1",
+    video: true,
+    sequenceStart: 5,
+    sequenceEnd: 7,
+    duration: 2,
+    inPoint: 0.5,
+    outPoint: 4.5,
+    speed: 2,
+    mediaExists: true
+  });
+  handoff.sequence.duration = 5;
+  writeBridgeFile(fs, BRIDGE_PENDING, "h2.qkhandoff", handoff);
+
+  var world = createWorld(null, { bridge: true, fs: fs });
+  var result = JSON.parse(world.sandbox.qkBridgeImport("h2"));
+
+  assert.strictEqual(result.ok, true, JSON.stringify(result.steps));
+  var comp = world.bridge.comps[0];
+  close(comp.duration, 5, "comp duration covers the last clip");
+
+  var second = comp.layers.added[1];
+  close(second.startTime, 2.5, "second layer start time");
+  close(second.inPoint, 3, "second layer in point");
+  close(second.outPoint, 5, "second layer out point");
+  close(second.stretch, 50, "2x speed means 50% stretch");
+});
+
+test("bridge import makes a unique comp name and refuses a bad handoff", function () {
+  var fs = new MockFileSystem();
+  fs.files["C:/Media/a.mov"] = "media";
+  writeBridgeFile(fs, BRIDGE_PENDING, "h1.qkhandoff", bridgeHandoff());
+  writeBridgeFile(fs, BRIDGE_PENDING, "h3.qkhandoff", bridgeHandoff({ id: "h3" }));
+  writeBridgeFile(fs, BRIDGE_PENDING, "bad.qkhandoff", { format: "something-else", clips: [] });
+
+  var world = createWorld(null, { bridge: true, fs: fs });
+  var first = JSON.parse(world.sandbox.qkBridgeImport("h1"));
+  var second = JSON.parse(world.sandbox.qkBridgeImport("h3"));
+  var bad = JSON.parse(world.sandbox.qkBridgeImport("bad"));
+
+  assert.strictEqual(first.ok, true, JSON.stringify(first.steps));
+  assert.strictEqual(second.ok, true, JSON.stringify(second.steps));
+  assert.strictEqual(world.bridge.comps[1].name, "My Sequence 2");
+
+  assert.strictEqual(bad.ok, false);
+  assert.ok(
+    /not a QuickKit handoff/.test(bad.steps[bad.steps.length - 1].detail),
+    JSON.stringify(bad.steps)
+  );
+});
+
+test("bridge import fails cleanly when the footage is offline", function () {
+  var fs = new MockFileSystem();
+  writeBridgeFile(fs, BRIDGE_PENDING, "h1.qkhandoff", bridgeHandoff());
+
+  var world = createWorld(null, { bridge: true, fs: fs });
+  var result = JSON.parse(world.sandbox.qkBridgeImport("h1"));
+
+  assert.strictEqual(result.ok, false);
+  assert.ok(/not on disk/.test(result.steps[result.steps.length - 1].detail), JSON.stringify(result.steps));
+  assert.strictEqual(world.bridge.comps.length, 0, "no comp was built");
+});
+
+test("bridge prepare queues the comp, applies a template and returns a plan", function () {
+  var fs = new MockFileSystem();
+  var world = createWorld(null, { bridge: true, fs: fs });
+  world.app.project.activeItem = {
+    typeName: "Composition",
+    name: "Send back",
+    width: 1920,
+    height: 1080,
+    frameRate: 25,
+    duration: 4
+  };
+
+  var result = JSON.parse(world.sandbox.qkBridgePrepareRender("auto"));
+
+  assert.strictEqual(result.ok, true, JSON.stringify(result.steps));
+  assert.ok(result.plan, "plan returned");
+  assert.strictEqual(result.plan.comp, "Send back");
+  assert.strictEqual(result.plan.project, "C:/Projects/test.aep");
+  assert.ok(/\/QuickKit\/bridge\/renders\//.test(result.plan.output), result.plan.output);
+  assert.ok(/\.mov$/.test(result.plan.output), "QuickTime fallback writes .mov");
+  assert.strictEqual(result.plan.extension, "mov");
+  assert.strictEqual(world.bridge.saves, 1, "project saved for aerender");
+  assert.strictEqual(world.bridge.queue.length, 1, "one render queue item");
+  assert.ok(result.plan.output.indexOf("Send back") >= 0, "output is named after the comp");
+});
+
+test("bridge prepare walks the template list and fails when none exists", function () {
+  var fs = new MockFileSystem();
+  var someMissing = [
+    "QuickTime",
+    "Lossless",
+    "H.264 - Match Render Settings - 15 Mbps",
+    "Apple ProRes 422",
+    "H.264",
+    "Lossless with Alpha"
+  ];
+  var world = createWorld(null, { bridge: true, fs: fs, failTemplates: someMissing });
+  world.app.project.activeItem = { typeName: "Composition", name: "Fallback", width: 1280, height: 720, frameRate: 30, duration: 2 };
+
+  var result = JSON.parse(world.sandbox.qkBridgePrepareRender("auto"));
+  assert.strictEqual(result.ok, true, JSON.stringify(result.steps));
+  assert.strictEqual(result.plan.template, "Apple ProRes 422 HQ");
+  assert.ok(/\.mov$/.test(result.plan.output), result.plan.output);
+
+  var none = createWorld(null, {
+    bridge: true,
+    fs: new MockFileSystem(),
+    failTemplates: [
+      "QuickTime",
+      "Lossless",
+      "H.264 - Match Render Settings - 15 Mbps",
+      "Apple ProRes 422 HQ",
+      "Apple ProRes 422",
+      "H.264",
+      "Lossless with Alpha"
+    ]
+  });
+  none.app.project.activeItem = { typeName: "Composition", name: "Nothing", width: 1920, height: 1080, frameRate: 25, duration: 1 };
+
+  var failed = JSON.parse(none.sandbox.qkBridgePrepareRender("auto"));
+  assert.strictEqual(failed.ok, false);
+  assert.ok(/None of the output module templates/.test(failed.steps[failed.steps.length - 1].detail), JSON.stringify(failed.steps));
+});
+
+test("bridge prepare refuses an unsaved project", function () {
+  var world = createWorld(null, { bridge: true, projectFile: null });
+  world.app.project.file = null;
+  world.app.project.activeItem = { typeName: "Composition", name: "Unsaved", width: 1920, height: 1080, frameRate: 25, duration: 1 };
+
+  var result = JSON.parse(world.sandbox.qkBridgePrepareRender("auto"));
+  assert.strictEqual(result.ok, false);
+  assert.ok(/never been saved/.test(result.steps[1].detail), JSON.stringify(result.steps));
+});
+
+test("bridge finish writes a return file and places it when Premiere is running", function () {
+  function run(premiereRunning) {
+    var fs = new MockFileSystem();
+    fs.files["C:/Media/a.mov"] = "media";
+    writeBridgeFile(fs, BRIDGE_PENDING, "h1.qkhandoff", bridgeHandoff());
+
+    var world = createWorld(null, { bridge: true, fs: fs, premiereRunning: premiereRunning });
+    world.sandbox.qkBridgeImport("h1");
+
+    var output = "C:/Users/Test/AppData/Roaming/QuickKit/bridge/renders/My Sequence 1.mov";
+    fs.files[output] = "rendered";
+
+    var payload = JSON.stringify({
+      output: output,
+      comp: "My Sequence",
+      duration: 4,
+      width: 1920,
+      height: 1080,
+      frameRate: 25
+    });
+    var result = JSON.parse(world.sandbox.qkBridgeFinishRender(payload));
+    return { result: result, fs: fs, world: world };
+  }
+
+  var quiet = run(false);
+  assert.strictEqual(quiet.result.ok, true, JSON.stringify(quiet.result.steps));
+  assert.strictEqual(quiet.result.placed, false);
+  var returnId = quiet.result.id;
+  var record = JSON.parse(quiet.fs.files[BRIDGE_RETURNS + "/" + returnId + ".qkreturn"]);
+  assert.strictEqual(record.format, "quickkit-return");
+  assert.strictEqual(record.comp, "My Sequence");
+  close(record.place.start, 2, "return remembers the start");
+  assert.strictEqual(record.note.indexOf("not Dynamic Link") >= 0, true);
+
+  var live = run(true);
+  assert.strictEqual(live.result.placed, true);
+  assert.strictEqual(live.world.bridgeTalk.instances.length, 1, "BridgeTalk was used");
+  assert.ok(/qkBridgePlaceReturn/.test(live.world.bridgeTalk.instances[0].body), live.world.bridgeTalk.instances[0].body);
+});
+
+test("bridge finish refuses a missing render file", function () {
+  var fs = new MockFileSystem();
+  var world = createWorld(null, { bridge: true, fs: fs });
+
+  var result = JSON.parse(
+    world.sandbox.qkBridgeFinishRender(JSON.stringify({ output: "C:/nowhere/out.mov", comp: "Gone" }))
+  );
+  assert.strictEqual(result.ok, false);
+  assert.ok(/no file at/i.test(result.steps[0].detail), result.steps[0].detail);
+});
+
+test("bridge place imports the render and puts it back at the original position", function () {
+  var fs = new MockFileSystem();
+  var render = "C:/Users/Test/AppData/Roaming/QuickKit/bridge/renders/My Sequence.mov";
+  fs.files[render] = "rendered";
+  writeBridgeFile(fs, BRIDGE_RETURNS, "r1.qkreturn", {
+    format: "quickkit-return",
+    version: 1,
+    id: "r1",
+    comp: "My Sequence",
+    render: render,
+    bytes: 8,
+    duration: 4,
+    place: { start: 2, track: 0, trackName: "V1" }
+  });
+
+  var world = createPremiereWorld({ bridge: true, fs: fs });
+  world.addVideoTrack("V1");
+  var result = JSON.parse(world.sandbox.qkBridgePlaceReturn("r1"));
+
+  assert.strictEqual(result.ok, true, JSON.stringify(result.steps));
+  assert.strictEqual(world.imported.length, 1, "render imported");
+  assert.strictEqual(world.placed.length, 1, "render placed");
+  close(world.placed[0].at, 2, "placed at the original start");
+  assert.strictEqual(world.placed[0].track, "V1");
+  assert.strictEqual(world.placed[0].mode, "overwrite");
+  assert.ok(fs.files["C:/Users/Test/AppData/Roaming/QuickKit/bridge/placed/r1.qkreturn"], "return archived");
+});
+
+test("bridge place reports a missing render and honours a positionless comp", function () {
+  var fs = new MockFileSystem();
+  writeBridgeFile(fs, BRIDGE_RETURNS, "gone.qkreturn", {
+    format: "quickkit-return",
+    id: "gone",
+    comp: "Missing",
+    render: "C:/nowhere/missing.mov"
+  });
+
+  var world = createPremiereWorld({ bridge: true, fs: fs });
+  world.addVideoTrack("V1");
+  var missing = JSON.parse(world.sandbox.qkBridgePlaceReturn("gone"));
+  assert.strictEqual(missing.ok, false);
+  assert.ok(/is not at/.test(missing.steps[1].detail), JSON.stringify(missing.steps));
+  assert.strictEqual(world.placed.length, 0);
+
+  var render = "C:/Users/Test/AppData/Roaming/QuickKit/bridge/renders/No Position.mov";
+  fs.files[render] = "rendered";
+  writeBridgeFile(fs, BRIDGE_RETURNS, "nopos.qkreturn", {
+    format: "quickkit-return",
+    id: "nopos",
+    comp: "No Position",
+    render: render,
+    place: null
+  });
+
+  var placed = JSON.parse(world.sandbox.qkBridgePlaceReturn("nopos"));
+  assert.strictEqual(placed.ok, true, JSON.stringify(placed.steps));
+  close(world.placed[0].at, 0, "positionless comp lands at 0");
+});
+
+test("bridge list reports handoffs and returns waiting", function () {
+  var fs = new MockFileSystem();
+  fs.files["C:/Media/a.mov"] = "media";
+  writeBridgeFile(fs, BRIDGE_PENDING, "h1.qkhandoff", bridgeHandoff());
+  writeBridgeFile(fs, BRIDGE_RETURNS, "r1.qkreturn", {
+    format: "quickkit-return",
+    id: "r1",
+    comp: "My Sequence",
+    render: "C:/nowhere/My Sequence.mov",
+    duration: 4,
+    place: { start: 2, track: 0, trackName: "V1" }
+  });
+
+  var world = createWorld(null, { bridge: true, fs: fs });
+  var result = JSON.parse(world.sandbox.qkBridgeList());
+
+  assert.strictEqual(result.ok, true, result.error);
+  assert.strictEqual(result.pending.length, 1);
+  assert.strictEqual(result.returns.length, 1);
+  assert.strictEqual(result.pending[0].comp, "My Sequence");
+  assert.strictEqual(result.pending[0].clips, 1);
+  assert.strictEqual(result.returns[0].comp, "My Sequence");
+  assert.strictEqual(result.returns[0].renderExists, false);
+});
+
 /* ---------------- report ---------------- */
 
 console.log("");

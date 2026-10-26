@@ -375,6 +375,80 @@
                 data-tip="Remove the markers QuickKit added; nothing else is touched">Clear QuickKit markers</button>
       </section>
 
+      <section class="qk-panel qk-panel--bridge" id="qk-panel-bridge" data-panel="bridge" aria-label="Bridge" hidden>
+        <p class="qk-panel__lead">Move work between Premiere Pro and After Effects as files. Premiere writes a handoff for the used clip range, After Effects builds a matching composition, and the render comes back to the same timeline position.</p>
+
+        <p class="qk-bridge-note">This is a file handoff, not Dynamic Link. Nothing stays linked: the handoff is a JSON file in %APPDATA%\QuickKit\bridge and the render is normal media you can move or delete.</p>
+
+        <div class="qk-bridge-host" id="qk-bridge-for-ppro" hidden>
+          <div class="qk-bridge-card">
+            <h2 class="qk-bridge-card__title">Send to After Effects</h2>
+            <label class="qk-field"><span class="qk-label">Clips</span>
+              <select class="qk-select" id="qk-bridge-scope"
+                      data-tip="The clips selected on the Timeline, or every clip in the sequence">
+                <option value="selection">Selected clips</option>
+                <option value="sequence">Whole sequence</option>
+              </select>
+            </label>
+            <button type="button" class="qk-btn qk-btn--primary qk-btn--block qk-action" id="qk-bridge-send"
+                    data-tip="Write a handoff for the used in/out range. Nothing changes in either app yet.">Send to After Effects</button>
+            <p class="qk-panel__hint" id="qk-bridge-send-note">Then open the Bridge tab in After Effects and press Import.</p>
+          </div>
+
+          <div class="qk-bridge-card">
+            <div class="qk-bridge-card__head">
+              <h2 class="qk-bridge-card__title">Renders waiting</h2>
+              <button type="button" class="qk-btn qk-btn--ghost qk-btn--xs qk-action" id="qk-bridge-refresh"
+                      data-tip="Look in %APPDATA%\QuickKit\bridge\returns for new renders">Refresh</button>
+            </div>
+            <p class="qk-panel__hint" id="qk-bridge-returns-note">No renders waiting yet.</p>
+            <ul class="qk-bridge-list" id="qk-bridge-returns" aria-label="Renders waiting for Premiere Pro"></ul>
+          </div>
+        </div>
+
+        <div class="qk-bridge-host" id="qk-bridge-for-aeft" hidden>
+          <div class="qk-bridge-card">
+            <div class="qk-bridge-card__head">
+              <h2 class="qk-bridge-card__title">Handoffs waiting</h2>
+              <button type="button" class="qk-btn qk-btn--ghost qk-btn--xs qk-action" id="qk-bridge-refresh-aeft"
+                      data-tip="Look in %APPDATA%\QuickKit\bridge\pending for new handoffs">Refresh</button>
+            </div>
+            <p class="qk-panel__hint" id="qk-bridge-pending-note">No handoffs waiting yet. Send clips from Premiere Pro first.</p>
+            <ul class="qk-bridge-list" id="qk-bridge-pending" aria-label="Handoffs waiting for After Effects"></ul>
+          </div>
+
+          <div class="qk-bridge-card">
+            <h2 class="qk-bridge-card__title">Send back to Premiere</h2>
+            <p class="qk-bridge-comp" id="qk-bridge-comp">No composition open.</p>
+            <label class="qk-field"><span class="qk-label">Format</span>
+              <select class="qk-select" id="qk-bridge-format"
+                      data-tip="Automatic tries QuickTime, then Lossless and H.264 until one output template exists on this machine">
+                <option value="auto">Automatic</option>
+                <option value="prores">ProRes 422 HQ (.mov)</option>
+                <option value="h264">H.264 (.mp4)</option>
+                <option value="lossless">Lossless (.avi)</option>
+              </select>
+            </label>
+            <div class="qk-silence-run">
+              <button type="button" class="qk-btn qk-btn--primary qk-btn--block qk-action" id="qk-bridge-render"
+                      data-tip="Save the project, render with aerender, then hand the file to Premiere Pro">Render and send back</button>
+              <button type="button" class="qk-btn qk-btn--secondary qk-btn--block qk-action" id="qk-bridge-cancel"
+                      data-tip="Stop aerender and leave any partial file alone" hidden>Cancel render</button>
+            </div>
+            <div class="qk-progress" id="qk-bridge-progress-wrap" hidden>
+              <div class="qk-progress__track"><div class="qk-progress__bar" id="qk-bridge-progress"></div></div>
+              <p class="qk-progress__text" id="qk-bridge-progress-text">Waiting</p>
+            </div>
+            <p class="qk-panel__hint" id="qk-bridge-render-note">aerender renders in its own process, so this panel stays responsive and Cancel works. The Render Queue fallback freezes the panel and is only for when aerender is missing.</p>
+          </div>
+        </div>
+
+        <div class="qk-bridge-steps-wrap" id="qk-bridge-steps-wrap" hidden>
+          <h2 class="qk-bridge-card__title">Last action</h2>
+          <ol class="qk-bridge-steps" id="qk-bridge-steps" aria-label="Step by step result"></ol>
+        </div>
+      </section>
+
       <div id="qk-empty-slot" hidden></div>
     </main>
 
