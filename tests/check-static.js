@@ -374,45 +374,110 @@ if (!actionButtons.length) fail("no action buttons found in index.html");
 else if (noTip.length) fail(noTip.length + " action button(s) without data-tip");
 else pass("all " + actionButtons.length + " action buttons have tooltips");
 
-/* 14. text panel matches the host presets */
-var hostKinds = [];
-var kindsMatch = /var QK_TEXT_KINDS = \[([^\]]+)\]/.exec(hostSource);
-if (kindsMatch) {
-  kindsMatch[1].replace(/"([a-z]+)"/g, function (_, kind) {
-    hostKinds.push(kind);
-    return _;
-  });
-}
-
+/* 14. text panel matches the data-driven engine (Part 6C) */
 var textPanelMatch = /<section[^>]*id="qk-panel-text"[\s\S]*?<\/section>/.exec(html);
-if (!hostKinds.length) {
-  fail("host QK_TEXT_KINDS is missing or empty");
-} else if (!textPanelMatch) {
-  fail("text panel #qk-panel-text is missing");
+var enginePath = path.join(ROOT, "extension", "js", "text-presets.js");
+var textEngine = exists("extension/js/text-presets.js") ? require(enginePath) : null;
+
+if (!textEngine) {
+  fail("extension/js/text-presets.js is missing, so there is no preset engine");
 } else {
-  var textPanel = textPanelMatch[0];
-  var panelKinds = [];
-  textPanel.replace(/data-text-preset="([a-z]+)"/g, function (_, kind) {
-    if (panelKinds.indexOf(kind) === -1) panelKinds.push(kind);
-    return _;
+  if (textEngine.PRESETS.length >= 40) pass("text preset engine has " + textEngine.PRESETS.length + " presets");
+  else fail("text preset engine has only " + textEngine.PRESETS.length + " presets (needs 40)");
+
+  var missingCategories = textEngine.CATEGORIES.filter(function (name) {
+    return !textEngine.PRESETS.some(function (preset) { return preset.category === name; });
   });
+  if (missingCategories.length) fail("preset categories with no presets: " + missingCategories.join(", "));
+  else pass("all " + textEngine.CATEGORIES.length + " preset categories are populated");
 
-  var missingKinds = hostKinds.filter(function (kind) { return panelKinds.indexOf(kind) === -1; });
-  var extraKinds = panelKinds.filter(function (kind) { return hostKinds.indexOf(kind) === -1; });
-  if (missingKinds.length) fail("text panel is missing presets: " + missingKinds.join(", "));
-  else if (extraKinds.length) fail("text panel offers presets the host does not know: " + extraKinds.join(", "));
-  else pass("text panel offers all " + hostKinds.length + " host presets");
+  var edgesOk = textEngine.PRESETS.every(function (preset) {
+    return preset.edges === "in" || preset.edges === "out" || preset.edges === "both";
+  });
+  if (!edgesOk) fail("a preset has an in/out/both value the host does not know");
+  else pass("every preset declares in, out or both");
 
-  if (textPanel.indexOf('id="qk-text-stage"') === -1) fail("text panel has no preview stage");
-  else pass("text panel has a preview stage");
+  var exposed = {};
+  var paramProblems = [];
+  textEngine.PRESETS.forEach(function (preset) {
+    ["duration", "delay", "easing"].forEach(function (key) {
+      if (!preset.expose || preset.expose.indexOf(key) === -1) paramProblems.push(preset.id + " does not expose " + key);
+    });
+    (preset.expose || []).forEach(function (key) {
+      exposed[key] = true;
+      if (!textEngine.PARAMS[key]) paramProblems.push(preset.id + " exposes unknown parameter " + key);
+    });
+    if (!preset.note) paramProblems.push(preset.id + " has no note");
+    if (!preset.name) paramProblems.push(preset.id + " has no name");
+  });
+  if (paramProblems.length) fail(paramProblems.slice(0, 3).join("; "));
+  else pass("every preset exposes duration, delay and easing, and names its parameters");
 
-  if (textPanel.indexOf('id="qk-text-apply"') === -1) fail("text panel has no apply button");
-  else pass("text panel has an apply button");
+  var missingParams = textEngine.PARAM_ORDER.filter(function (key) { return !exposed[key]; });
+  if (missingParams.length) fail("parameters never exposed by any preset: " + missingParams.join(", "));
+  else pass("every parameter is exposed by at least one preset");
 
-  if (textPanel.indexOf('id="qk-text-in"') === -1 || textPanel.indexOf('id="qk-text-out"') === -1) {
-    fail("text panel is missing the in/out edge checkboxes");
-  } else {
-    pass("text panel has both edge checkboxes");
+  var unplanned = textEngine.PRESETS.filter(function (preset) {
+    return !textEngine.plan(preset.id, null);
+  });
+  if (unplanned.length) fail("presets that compile to no plan: " + unplanned.map(function (p) { return p.id; }).join(", "));
+  else pass("every preset compiles to a key plan");
+
+  var ids = {};
+  var duplicate = "";
+  textEngine.PRESETS.forEach(function (preset) {
+    if (ids[preset.id]) duplicate = preset.id;
+    ids[preset.id] = true;
+  });
+  if (duplicate) fail("duplicate preset id: " + duplicate);
+  else pass("preset ids are unique");
+
+  if (!textPanelMatch) fail("text panel #qk-panel-text is missing");
+  else {
+    var textPanel = textPanelMatch[0];
+    if (textPanel.indexOf('id="qk-text-presets"') === -1) fail("text panel has no preset grid container");
+    else pass("text panel renders the preset grid from the engine");
+
+    if (textPanel.indexOf('id="qk-text-category"') === -1) fail("text panel has no category filter");
+    else pass("text panel has a category filter");
+
+    if (textPanel.indexOf('id="qk-text-stage"') === -1) fail("text panel has no preview stage");
+    else pass("text panel has a preview stage");
+
+    if (textPanel.indexOf('id="qk-text-apply"') === -1) fail("text panel has no apply button");
+    else pass("text panel has an apply button");
+
+    if (textPanel.indexOf('id="qk-text-mogrt"') === -1 || textPanel.indexOf('id="qk-text-mogrt-all"') === -1) {
+      fail("text panel is missing a MOGRT export button");
+    } else {
+      pass("text panel has single and batch MOGRT export buttons");
+    }
+
+    if (textPanel.indexOf('id="qk-text-in"') === -1 || textPanel.indexOf('id="qk-text-out"') === -1) {
+      fail("text panel is missing the in/out edge checkboxes");
+    } else {
+      pass("text panel has both edge checkboxes");
+    }
+
+    ["qk-text-stagger", "qk-text-overshoot", "qk-text-direction"].forEach(function (id) {
+      if (textPanel.indexOf('id="' + id + '"') === -1) fail("text panel is missing the " + id + " control");
+    });
+    if (
+      textPanel.indexOf('id="qk-text-stagger"') !== -1 &&
+      textPanel.indexOf('id="qk-text-overshoot"') !== -1 &&
+      textPanel.indexOf('id="qk-text-direction"') !== -1
+    ) {
+      pass("text panel exposes direction, stagger and overshoot");
+    }
+
+    if (html.indexOf('src="js/text-presets.js"') === -1) fail("index.html does not load text-presets.js");
+    else pass("index.html loads the preset engine");
+
+    if (!/function qkTextPresetApply\(/.test(hostSource)) fail("host has no qkTextPresetApply()");
+    else pass("host defines qkTextPresetApply()");
+
+    if (!/function qkTextPresetMogrt\(/.test(hostSource)) fail("host has no qkTextPresetMogrt()");
+    else pass("host defines qkTextPresetMogrt()");
   }
 }
 

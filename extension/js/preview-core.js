@@ -223,7 +223,7 @@
       if (!item) continue;
       if (item.type !== "ae-preset") continue;
       if (!item.hostSupport || item.hostSupport.indexOf("AEFT") < 0) continue;
-      if (!/\.(qkpreset|ffx)$/.test(String(item.asset || "").toLowerCase())) continue;
+      if (!/\.(qkpreset|qktextpreset|ffx)$/.test(String(item.asset || "").toLowerCase())) continue;
       var state = typeof stateOf === "function" ? stateOf(item) : "none";
       if (state === "ready") continue;
       out.push(item);

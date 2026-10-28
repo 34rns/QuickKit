@@ -12,12 +12,13 @@ QuickKit is a **free, local-only CEP extension** for Adobe After Effects and
 Premiere Pro: an HTML/JS panel plus an ExtendScript (`.jsx`) host, one manifest
 targeting both apps, Windows 10/11 only, no network at runtime.
 
-Current version: **0.8.0** (Parts 0–6, 6A and 6B done: shell, AE core tools, text
-animations, preset manager, Premiere silence cutter, Premiere ⇄ After Effects
-bridge, unified library store/UI, select-and-preview pane with rendered clips and
-canvas approximations). Applying a library item works in After Effects; Premiere
-applies in 6D. Everything that touches the real app is still `UNTESTED` until the
-manual checklists in `docs/` are walked through.
+Current version: **0.9.0** (Parts 0–6, 6A, 6B and 6C done: shell, AE core tools,
+text animations, preset manager, Premiere silence cutter, Premiere ⇄ After
+Effects bridge, unified library store/UI, select-and-preview pane with rendered
+clips and canvas approximations, and a data-driven text animation library with
+MOGRT export). Applying a library item works in After Effects; Premiere applies
+in 6D. Everything that touches the real app is still `UNTESTED` until the manual
+checklists in `docs/` are walked through.
 
 ## 2. Architecture
 
@@ -94,10 +95,11 @@ returns\<id>.qkreturn    AE writes     →  Premiere's Place button (then moves 
 | `WORKLOG.md` | Reverse-chronological journal, one line per edit/step. |
 | `prompts/PROMPT_N.md` | Verbatim prompt archive with status headers. |
 | `README.md` | Public-facing docs: what works, install (3 steps), troubleshooting, privacy. |
-| `extension/CSXS/manifest.xml` | One manifest, `HostList` = AEFT + PPRO, `[22.0,99.9]`, version 0.8.0, CEF `--enable-nodejs` + `--mixed-context`. |
+| `extension/CSXS/manifest.xml` | One manifest, `HostList` = AEFT + PPRO, `[22.0,99.9]`, version 0.9.0, CEF `--enable-nodejs` + `--mixed-context`. |
 | `extension/index.html` | Panel markup: header, host block, 8 tabs, one `<section>` per tool (incl. `#qk-panel-library`), the library context menu, dialogs, tooltip, status strip. |
-| `extension/js/panel.js` | All panel logic (~6800 lines): tabs, tooltips, welcome, per-tool wiring, presets UI, WAAPI text preview, silence tab, bridge tab, library UI, preview pane + generation. |
+| `extension/js/panel.js` | All panel logic (~7200 lines): tabs, tooltips, welcome, per-tool wiring, presets UI, WAAPI text preview, the engine-driven Text tab (grid, params, live re-apply, MOGRT single/batch), silence tab, bridge tab, library UI, preview pane + generation, text preset seeding. |
 | `extension/js/csinterface-lite.js` | The bridge (`window.__qk.call`). |
+| `extension/js/text-presets.js` | Text preset engine (Part 6C), no dependencies: 54 preset definitions in 12 categories, the parameter schema, and `plan()` — the only compiler from preset data + user parameters to numeric key lists. Loaded as a plain `<script>` and by `require()` in tests. |
 | `extension/js/preview-core.js` | Preview rules, no DOM: speeds, clock, easing curves, approximation classifier from name/category/tags, `sampleAt()` pose, `planGeneration()` batch filter. Loaded as a plain `<script>`. |
 | `extension/js/preview-node.js` | Preview encoder, `require()`d only: frame-name parsing, `%0Nd` pattern vs concat fallback, `videoArgs`/`thumbArgs`, `encode()` with `cancel()`. Spawns ffmpeg, no shell. |
 | `extension/js/library-core.js` | Library rules, no dependencies: schema/normalisation, nested folders, search/filter/sort, smart collections, Part 4 migration, repair-from-disk, pack manifest/import planning. Loaded as a plain `<script>`. |
@@ -106,7 +108,7 @@ returns\<id>.qkreturn    AE writes     →  Premiere's Place button (then moves 
 | `extension/js/render-node.js` | Node side of the Bridge render: `locate`/`probe` for `aerender.exe`, `parseVersion`/`parseProgress`/`classifyFailure`, `spawnJob` (line streaming + `cancel()`), `render()`. Real output tested against `aerender 26.5x89`. |
 | `extension/css/panel.css` | Shell: grid, header, tabs, status, tooltip, welcome, dialogs. |
 | `extension/css/tools.css` | Tool panels: anchors, transforms, easing, text, presets, silence (waveform, progress, segment list), bridge (cards, lists, step dots), library (search, folder tree, cards, menu, dialog), message strip. |
-| `host/quickkit.jsx` | The entire host (~6800 lines): helpers, host info, anchor, layers, easing, text engine, preset store, Premiere silence cutter (`qkSilence*`), bridge (`qkBridge*`), library apply + preview generation (`qkLibraryApply`, `qkPreviewGenerate`). Marked sections; `$.evalFile` split deliberately avoided. |
+| `host/quickkit.jsx` | The entire host (~7900 lines): helpers, host info, anchor, layers, easing, text engine, data-driven text preset plan executor + MOGRT export (`qkTextPresetApply`, `qkTextPresetMogrt`), preset store, Premiere silence cutter (`qkSilence*`), bridge (`qkBridge*`), library apply + preview generation (`qkLibraryApply`, `qkPreviewGenerate`). Marked sections; `$.evalFile` split deliberately avoided. |
 | `bin/ffmpeg/` | `NOTICE.txt` + `README.txt` (tracked); `ffmpeg.exe`, `ffprobe.exe`, `VERSION.txt` fetched per machine and **gitignored**. |
 | `design/tokens.css` | 126 tokens: dark theme, single accent `#7C5CFF`. Only place raw colours/fonts/radii live. |
 | `design/DESIGN_SYSTEM.md` | The binding visual spec (states, spacing, typography). |
@@ -114,16 +116,18 @@ returns\<id>.qkreturn    AE writes     →  Premiere's Place button (then moves 
 | `design/fonts/*` | Bundled Inter (OFL), logged in `docs/ASSET_LICENSES.md`. |
 | `scripts/install.bat`, `scripts/uninstall.bat` | Copy/clean the extension folder, toggle `PlayerDebugMode`. |
 | `scripts/fetch-ffmpeg.ps1` | Copies a local `ffmpeg.exe` (and `ffprobe.exe`) into `bin\ffmpeg\`, writes `VERSION.txt` with the build string and the detected licence. |
-| `tests/check-static.js` | 112 static checks incl. the **ES3 reserved-word scan**, the no-network check, and the silence/ffmpeg/bridge/library/preview assertions (bridge checks 23–27, library checks 28–31, preview checks 32). |
+| `tests/check-static.js` | 125 static checks incl. the **ES3 reserved-word scan**, the no-network check, and the silence/ffmpeg/bridge/library/preview/text-preset assertions (bridge checks 23–27, library checks 28–31, preview check 32, text preset section 14). |
 | `tests/host-logic.test.js` | 104 mock-host tests (mock AE object model, mock AE bridge project with render queue, **and** a mock Premiere world; no Adobe apps needed). |
 | `tests/render.test.js` | 12 checks against the real `aerender.exe`: version/progress parsing, `spawnJob` streaming + cancel, error classification, discovery, and the real error text for a bad project. Skips the real runs when AE is absent. |
 | `tests/ffmpeg.test.js` | 20 checks against the real `ffmpeg.exe`, including a generated WAV in a path with spaces and 中文; skips the real runs when no binary is found. |
 | `tests/library.test.js` | 18 checks on real temp folders: schema files, Part 4 migration (ids kept, damaged file skipped), item/folder CRUD, corrupt-index repair, missing assets, newer-schema refusal, pack round trip, skip/replace/keep-both, a PowerShell `Expand-Archive` proof, and hostile/truncated pack refusal. |
 | `tests/preview.test.js` | 23 checks: clock/speed/easing, approximation + `sampleAt`, params and preview signatures, ready/stale/none, preview files on a real temp folder, ffmpeg argument builders, and a real PNG→mp4+webp encode when `bin/ffmpeg` exists. |
+| `tests/text-presets.test.js` | 31 checks on the real engine: 54 presets / 12 categories, edges + parameter exposure, plan purity and key shapes, clamps, direction signs, overshoot, stagger → smoothness, words vs characters, em offsets, loop tiling, preview kinds, plus host assertions (MOGRT API, no project save) and panel wiring. |
 | `tests/.preview/` | Fake-CEP harness: `fake-cep.js` stubs `__qk.call` (AEFT by default, PPRO with `?host=PPRO`), including bridge stand-ins, an in-memory `window.QKFakeLibrary` (14 items, 5 folders, one missing asset, preview records ready/stale/gone), `?empty=1`, `?many=N` (bulk items) and `?slow=1` (cancel a batch), plus `fixtures/preview.mp4` + `thumb.webp`. |
 | `tests/refresh-preview.js` | Rebuilds `tests/.preview` from `extension/`, `design/tokens.css` and `design/icons/`, injecting the `fake-cep.js` script tag. Run it after any panel change. |
 | `tests/.preview-server.js` | Test-only static server for `tests/.preview` (`node tests/.preview-server.js 8137`) so `file://` restrictions do not hide image/CSS bugs. |
-| `docs/manual-test-checklist-part{1..6}.md`, `docs/manual-test-checklist-part6a.md`, `docs/manual-test-checklist-part6b.md` | Manual test lists for the real apps. |
+| `docs/manual-test-checklist-part{1..6}.md`, `docs/manual-test-checklist-part6a.md`, `docs/manual-test-checklist-part6b.md`, `docs/manual-test-checklist-part6c.md` | Manual test lists for the real apps. |
+| `docs/mogrt-export-api.md` | The verified MOGRT export API, the property types Essential Graphics accepts, and every limit (save prompt, no dropdowns, retime only by expression). |
 | `docs/releasing.md`, `release.ps1`, `quickkit.zip` | Release flow and artifact. |
 
 ## 4. Key decisions and why
@@ -200,6 +204,33 @@ returns\<id>.qkreturn    AE writes     →  Premiere's Place button (then moves 
     it cannot copy a `.mogrt` or a pack byte-safely. Packs are written by
     QuickKit's own zip writer (`zlib` + CRC32) so there is no dependency and
     any zip tool can still open the result.
+18. **Text presets are data, and the engine is the only compiler** —
+    `text-presets.js` holds 54 preset records (`edges`, `expose`, `note`,
+    `preview`, `layer` programs and/or an `animator`) and one `plan()` that turns
+    a record plus the seven parameters into numeric key lists. Both the panel and
+    the host read only the plan, so a new preset never means new host code, and
+    the whole catalogue is testable without Adobe. Per-character offsets are
+    stored in **em** and multiplied by the layer's `doc.fontSize` at apply time,
+    and position/scale/rotation are resolved **relative to the layer's own
+    current value**, which is what makes any font size, anchor and justification
+    work. `stagger` is range-selector smoothness; `basedOn` maps characters=1,
+    words=3, lines=4.
+19. **QuickKit marks its own work instead of owning the layer** — after applying,
+    the layer's comment becomes `QuickKit Text Preset|<id>|v<v>`, and the host
+    clears only channels it keyed plus animators named `QuickKit *`. A layer the
+    user keyed by hand is reported as skipped, never overwritten. Re-applying
+    (including every live update) replaces QuickKit's work instead of stacking.
+20. **MOGRT export never saves the project** — `exportAsMotionGraphicsTemplate`
+    can trigger After Effects' own save prompt; QuickKit deliberately does not
+    call the project's save method, because that would write the user's file and
+    our helper comp to disk. The prompt is the single manual step (choose
+    **Don't Save**). If the scripted export returns `false`, the comp is opened
+    with `openInEssentialGraphics()` and the button becomes **Finish MOGRT
+    export**, which picks up the file the user saved. Helper comp and the
+    `QuickKit Controls` null are removed on success. Only Source Text and two
+    numerical sliders (Delay, Speed) are exposed because those are the only
+    types Essential Graphics accepts that can also drive an expression; Easing
+    and Direction stay baked.
 
 ## 5. Known bugs and gotchas
 
@@ -288,6 +319,32 @@ returns\<id>.qkreturn    AE writes     →  Premiere's Place button (then moves 
   second panel code path: two writers would interleave read-modify-write and
   drop items. Everything goes through `library-io.js`, and a stale in-memory
   index is re-read on each mutation.
+- **Text presets: the plan is data, the host validates it again.** `qkTextPlanRead`
+  re-clamps every number and channel coming from a `.qktextpreset` file, because
+  a library pack can carry a hand-edited one. Every new host behaviour belongs in
+  the planner/executor here, never in a per-preset `if` — adding a preset must
+  stay a data edit in `text-presets.js`.
+- **Text layers are marked, and only QuickKit's own keys are cleared.** The
+  comment marker (`QuickKit Text Preset|<id>|v<v>`) plus the `QuickKit ` animator
+  prefix are the whole ownership rule. Never clear a channel or animator without
+  checking them: a user's hand keyframes must survive and be reported as skipped.
+- **MOGRT export: the save prompt, the folder argument, and the copy.** The
+  export takes a **folder**, not a file, and the name comes from
+  `motionGraphicsTemplateName`; the panel then reads the produced `.mogrt` and
+  adds it to the library as a `mogrt` item (the host never writes into the
+  library). Never add a project save call to get past the prompt — the prompt is
+  the documented manual step (choose **Don't Save**), and the fallback is
+  `openInEssentialGraphics()` + **Finish MOGRT export**.
+- **Only Source Text and single-value numeric properties can be exposed** to
+  Essential Graphics. Dropdown-like controls (Easing, Direction) cannot exist, so
+  they are baked; retiming works only because Delay/Speed sliders are referenced
+  by expressions using `valueAtTime()`. Anything else is an Adobe limit, not a
+  bug to "fix" with a fake control.
+- **The text preset seed writes 54 files once.** `localStorage` key
+  `qk.textpresets.seeded` holds `<VERSION>:<count>`; bumping `VERSION` in
+  `text-presets.js` re-seeds (existing ids collide, so item ids are the preset id
+  — do not change ids casually, it duplicates items).
+
 - **A newer `schemaVersion` is refused, not downgraded.** `load()` still lists
   the items, but every change returns *"This library was saved by a newer
   QuickKit. Update QuickKit before changing it."* Never "fix" this by writing
@@ -328,13 +385,14 @@ returns\<id>.qkreturn    AE writes     →  Premiere's Place button (then moves 
 ## 6. How to run and test
 
 ```bash
-# automated — all six must pass, exit 0
-node tests/check-static.js        # 112 checks: structure, versions, ES3 scan, no-network, silence + bridge + library + preview wiring
+# automated — all seven must pass, exit 0
+node tests/check-static.js        # 125 checks: structure, versions, ES3 scan, no-network, silence + bridge + library + preview + text preset wiring
 node tests/host-logic.test.js     # 104 mock-host tests (mock AE, mock AE bridge, mock Premiere), no apps needed
 node tests/render.test.js         # 12 checks against the real aerender.exe (skips real runs if AE absent)
 node tests/ffmpeg.test.js         # 20 checks against the real ffmpeg (skips real runs if absent)
 node tests/library.test.js        # 18 checks on real temp folders: schema, migration, repair, packs
 node tests/preview.test.js        # 23 checks: playback maths, params/signatures, preview files, real encode when ffmpeg exists
+node tests/text-presets.test.js   # 31 checks: 54-preset engine, plan compiler, host MOGRT API, panel wiring
 
 # syntax spot-check (copy first — Node rejects .jsx)
 cp host/quickkit.jsx /tmp/qk.js && node --check /tmp/qk.js
@@ -343,6 +401,7 @@ node --check extension/js/library-core.js
 node --check extension/js/library-io.js
 node --check extension/js/preview-core.js
 node --check extension/js/preview-node.js
+node --check extension/js/text-presets.js
 node --check extension/js/ffmpeg-node.js
 node --check extension/js/render-node.js
 
@@ -359,38 +418,42 @@ node tests/.preview-server.js 8137                # open http://127.0.0.1:8137/i
 # (in a browser there is no Node, so the Silence and Bridge tabs say so — expected)
 ```
 
-Real-app verification = walk `docs/manual-test-checklist-part6b.md` (previews),
-then `part6a` (library), `part6` (bridge), `part5` (silence) and `part4`
-(presets), then parts 1–3. Report each item's number, expected result and what
-actually happened.
+Real-app verification = walk `docs/manual-test-checklist-part6c.md` (text
+presets + MOGRTs), then `part6b` (previews), `part6a` (library), `part6`
+(bridge), `part5` (silence) and `part4` (presets), then parts 1–3. Report each
+item's number, expected result and what actually happened.
 
 ## 7. Next 3 concrete actions
 
-0. **Status as of 2026-10-26 (Prompt 9 closeout) — no code work is
-   outstanding.** Prompts 1–9 are all `DONE` in `PROGRESS.md` and in
-   `prompts/PROMPT_N.md`; all six suites are green (112 / 104 / 12 / 20 / 18 /
-   23); `scripts\install.bat` installed **0.8.0**. Part 6B adds the preview pane,
-   library-item apply and AE preview generation; every real-app path (Render
-   Queue output, `applyPreset` inside the temp comp, `file://` video in CEP,
-   native dialogs, real mouse/keyboard, a 20-item batch) is **UNTESTED**.
+0. **Status as of 2026-10-27 (Prompt 10 closeout) — no code work is
+   outstanding.** Prompts 1–10 are all `DONE` in `PROGRESS.md`; all seven suites
+   are green (125 / 104 / 12 / 20 / 18 / 23 / 31); `scripts\install.bat`
+   installed **0.9.0**. Part 6C adds the 54-preset text engine, live parameter
+   panel, MOGRT single/batch export and text-preset previews. Every real-app path
+   (plan → keyframes/animators, anchor behaviour, Essential Graphics exposure,
+   `exportAsMotionGraphicsTemplate` + the save prompt, the 54-item batch, a hand
+   import in Premiere) is **UNTESTED**.
 
-1. **Run `docs/manual-test-checklist-part6b.md` (Preview) first** — it is the
-   newest and least proven area. The one question that decides the feel: does
-   the generated `.mp4` actually play in the CEP panel, or does everything fall
-   back to the approximation canvas? Also check that generation leaves the
-   project and the Render Queue untouched. Copy the outcome here and only then
-   set the 6B rows in `PROGRESS.md` from `UNTESTED` to tested.
-2. **Then run `docs/manual-test-checklist-part6a.md` (Library)**, then `part6`
-   (Bridge), `part5` (Silence) and `part4` (presets). The library migration of
-   the user's own Part 4 presets and the bridge/Premiere calls are still
-   `UNTESTED`.
-3. **If any item fails, fix one part at a time and re-run all six suites** —
+1. **Run `docs/manual-test-checklist-part6c.md` (Text + MOGRT) first** — it is
+   the newest area. The two questions that decide the feel: do the animators and
+   selector properties resolve to real names on your AE version (steps 14–16),
+   and does the scripted MOGRT export succeed or fall back to Essential Graphics
+   (steps 47–52)? Copy the outcome here and only then flip the 6C rows in
+   `PROGRESS.md` from `UNTESTED` to tested.
+2. **Then run `docs/manual-test-checklist-part6b.md` (Preview)**, then `part6a`
+   (Library), `part6` (Bridge), `part5` (Silence) and `part4` (presets). The
+   library migration of the user's own Part 4 presets and the bridge/Premiere
+   calls are still `UNTESTED`; the 54 text presets are now the biggest batch of
+   new items in that library.
+3. **If any item fails, fix one part at a time and re-run all seven suites** —
    for a host error start with `node tests/check-static.js` (a single
-   ExtendScript reserved word silently kills every host function); for a
-   razor/ripple difference change `qkSilence*` **and** the mock together; for a
-   bridge difference change `qkBridge*` **and** `installAeBridge()` /
-   `createPremiereWorld({bridge:true})` together; for a library or preview
-   difference change `library-core.js` / `preview-core.js` **and**
-   `tests/library.test.js` / `tests/preview.test.js` / `tests/.preview/fake-cep.js`
-   together. Re-run `scripts\install.bat` before the retest and record the real
-   behaviour here.
+   ExtendScript reserved word silently kills every host function); for a preset
+   behaviour change edit `extension/js/text-presets.js` **and**
+   `tests/text-presets.test.js` together (never add a per-preset branch in the
+   host); for a razor/ripple difference change `qkSilence*` **and** the mock
+   together; for a bridge difference change `qkBridge*` **and**
+   `installAeBridge()` / `createPremiereWorld({bridge:true})` together; for a
+   library or preview difference change `library-core.js` / `preview-core.js`
+   **and** `tests/library.test.js` / `tests/preview.test.js` /
+   `tests/.preview/fake-cep.js` together. Re-run `scripts\install.bat` before the
+   retest and record the real behaviour here.

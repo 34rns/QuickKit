@@ -3,7 +3,7 @@
 Applies to **any** AI tool working here (Freebuff, OpenCode, CLI agents, a
 human's assistant). `QuickKit` is a local CEP extension; sessions get cut off
 mid-turn without warning, so these rules are how the next agent picks up
-cleanly. Last updated: 2026-10-26 (Prompt 5).
+cleanly. Last updated: 2026-10-28 (Prompt 10).
 
 ---
 

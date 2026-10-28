@@ -1567,6 +1567,1121 @@ function qkTextApply(kind, duration, delay, easing, animateIn, animateOut, direc
 }
 
 /* ============================================================
+ * Data-driven text presets (Part 6C)
+ *
+ * The panel compiles a preset definition plus the user's parameters into a
+ * plan: numeric key lists with no code in them. Everything below only reads
+ * that plan, so adding a preset never means adding host code.
+ *
+ * Plan channels:
+ *   layer    opacity (0..100 or "base"), position ({dx,dy} px or "base"),
+ *            scale ({mx,my} multiplier or "base"), rotation ({deg} or "base")
+ *   animator opacity / blur / rotation / tracking (number),
+ *            position ([x,y] em), scale ([sx,sy] percent)
+ * ============================================================ */
+
+var QK_TEXT_PLAN_FORMAT = "quickkit-text-preset";
+var QK_TEXT_MARKER = "QuickKit Text Preset";
+var QK_TEXT_PLAN_KEY_LIMIT = 400;
+
+function qkTextPlanIsObject(value) {
+  return !!value && typeof value === "object";
+}
+
+function qkTextPlanNumber(value, fallback) {
+  var number = parseFloat(qkStr(value));
+  return isNaN(number) ? fallback : number;
+}
+
+/* Accepts either the raw plan or { format, version, plan }. */
+function qkTextPlanRead(raw) {
+  var value = raw;
+  if (qkTextPlanIsObject(value) && qkTextPlanIsObject(value.plan)) value = value.plan;
+
+  if (!qkTextPlanIsObject(value)) return { error: "QuickKit could not read that text preset." };
+  if (!qkStr(value.id)) return { error: "That text preset has no id." };
+  if (!qkStr(value.name)) return { error: "That text preset has no name." };
+  if (!qkTextPlanIsObject(value.params)) return { error: "That text preset has no parameters." };
+
+  var layer = value.layer instanceof Array ? value.layer : [];
+  var animator = qkTextPlanIsObject(value.animator) ? value.animator : null;
+  if (!layer.length && !animator) return { error: "That text preset animates nothing." };
+
+  /* Copy only what the host understands, and clamp every number again here:
+     a hand-edited file must not be able to ask for wild key counts. */
+  var plan = {
+    v: qkTextPlanNumber(value.v, 1),
+    id: qkPresetCleanText(value.id, 60),
+    name: qkPresetCleanText(value.name, 60),
+    category: qkPresetCleanText(value.category, 40),
+    note: qkPresetCleanText(value.note, 240),
+    edges: qkStr(value.edges),
+    params: {
+      duration: qkTextPlanNumber(value.params.duration, 0.6),
+      delay: qkTextPlanNumber(value.params.delay, 0),
+      easing: qkStr(value.params.easing),
+      direction: qkStr(value.params.direction),
+      stagger: qkTextPlanNumber(value.params.stagger, 0),
+      overshoot: qkTextPlanNumber(value.params.overshoot, 0),
+      distance: qkTextPlanNumber(value.params.distance, 80)
+    },
+    inDuration: qkTextPlanNumber(value.inDuration, 0.6),
+    outDuration: qkTextPlanNumber(value.outDuration, 0.6),
+    layer: [],
+    animator: null
+  };
+
+  if (plan.edges !== "in" && plan.edges !== "out" && plan.edges !== "both") plan.edges = "both";
+  if (!(plan.params.duration > 0)) plan.params.duration = 0.6;
+  if (!(plan.inDuration > 0)) plan.inDuration = plan.params.duration;
+  if (!(plan.outDuration > 0)) plan.outDuration = plan.params.duration;
+  if (plan.params.delay < 0) plan.params.delay = 0;
+  if (plan.params.delay > 60) plan.params.delay = 60;
+  if (plan.inDuration > 60) plan.inDuration = 60;
+  if (plan.outDuration > 60) plan.outDuration = 60;
+  if (plan.params.easing !== "snappy" && plan.params.easing !== "linear") plan.params.easing = "smooth";
+  if (plan.params.direction !== "left" && plan.params.direction !== "right" && plan.params.direction !== "down") {
+    plan.params.direction = "up";
+  }
+
+  var channels = { opacity: 0, position: 0, scale: 0, rotation: 0 };
+  var i;
+  var k;
+
+  for (i = 0; i < layer.length; i++) {
+    var step = layer[i];
+    if (!qkTextPlanIsObject(step)) continue;
+    var channel = qkStr(step.channel);
+    if (channel !== "opacity" && channel !== "position" && channel !== "scale" && channel !== "rotation") continue;
+    var when = qkStr(step.when);
+    if (when !== "in" && when !== "out" && when !== "loop") continue;
+    var keys = step.keys instanceof Array ? step.keys : [];
+    if (!keys.length) continue;
+
+    var cleanKeys = [];
+    for (k = 0; k < keys.length && k < QK_TEXT_PLAN_KEY_LIMIT; k++) {
+      var entry = keys[k];
+      if (!(entry instanceof Array) || entry.length < 2) continue;
+      cleanKeys.push({ at: qkTextPlanNumber(entry[0], 0), v: entry[1] });
+    }
+    if (!cleanKeys.length) continue;
+
+    plan.layer.push({
+      channel: channel,
+      when: when,
+      ease: qkStr(step.ease) || plan.params.easing,
+      period: qkTextPlanNumber(step.period, 0),
+      keys: cleanKeys
+    });
+    channels[channel] = channels[channel] + 1;
+  }
+
+  if (qkTextPlanIsObject(animator)) {
+    var basedOn = qkStr(animator.basedOn);
+    if (basedOn !== "words" && basedOn !== "lines") basedOn = "characters";
+
+    var props = [];
+    var defProps = animator.props instanceof Array ? animator.props : [];
+    for (i = 0; i < defProps.length; i++) {
+      var prop = defProps[i];
+      if (!qkTextPlanIsObject(prop)) continue;
+      var pChannel = qkStr(prop.channel);
+      if (
+        pChannel !== "opacity" && pChannel !== "blur" && pChannel !== "position" &&
+        pChannel !== "scale" && pChannel !== "rotation" && pChannel !== "tracking"
+      ) {
+        continue;
+      }
+      props.push({ channel: pChannel, value: prop.value, unit: qkStr(prop.unit) });
+    }
+
+    var selectors = [];
+    var defSelectors = animator.selectors instanceof Array ? animator.selectors : [];
+    for (i = 0; i < defSelectors.length; i++) {
+      var sel = defSelectors[i];
+      if (!qkTextPlanIsObject(sel)) continue;
+      var sWhen = qkStr(sel.when);
+      if (sWhen !== "in" && sWhen !== "out" && sWhen !== "loop") continue;
+      var start = [];
+      var end = [];
+      var startList = sel.start instanceof Array ? sel.start : [];
+      var endList = sel.end instanceof Array ? sel.end : [];
+      for (k = 0; k < startList.length && k < QK_TEXT_PLAN_KEY_LIMIT; k++) {
+        if (!(startList[k] instanceof Array) || startList[k].length < 2) continue;
+        start.push({ at: qkTextPlanNumber(startList[k][0], 0), v: qkTextPlanNumber(startList[k][1], 0) });
+      }
+      for (k = 0; k < endList.length && k < QK_TEXT_PLAN_KEY_LIMIT; k++) {
+        if (!(endList[k] instanceof Array) || endList[k].length < 2) continue;
+        end.push({ at: qkTextPlanNumber(endList[k][0], 0), v: qkTextPlanNumber(endList[k][1], 100) });
+      }
+      if (!start.length && !end.length) continue;
+      selectors.push({
+        when: sWhen,
+        period: qkTextPlanNumber(sel.period, 0),
+        ease: qkStr(sel.ease) || plan.params.easing,
+        start: start,
+        end: end
+      });
+    }
+
+    if (props.length && selectors.length) {
+      plan.animator = {
+        name: qkPresetCleanText(animator.name, 60) || ("QuickKit " + plan.name),
+        basedOn: basedOn,
+        smoothness: qkTextPlanNumber(animator.smoothness, 0),
+        props: props,
+        selectors: selectors
+      };
+      if (plan.animator.smoothness < 0) plan.animator.smoothness = 0;
+      if (plan.animator.smoothness > 100) plan.animator.smoothness = 100;
+    }
+  }
+
+  if (!plan.layer.length && !plan.animator) return { error: "That text preset has no usable animation." };
+  return { plan: plan };
+}
+
+function qkTextPlanFromFile(filePath) {
+  var text = qkFileRead(filePath, QK_PRESET_MAX_BYTES);
+  if (text === null) return { error: "That text preset file is missing from the library folder." };
+  var raw = null;
+  try {
+    raw = qkJsonParse(text);
+  } catch (eParse) {
+    return { error: "That text preset file is damaged." };
+  }
+  return qkTextPlanRead(raw);
+}
+
+function qkTextPlanUses(plan, when) {
+  var i;
+  for (i = 0; i < plan.layer.length; i++) {
+    if (plan.layer[i].when === when) return true;
+  }
+  if (plan.animator) {
+    for (i = 0; i < plan.animator.selectors.length; i++) {
+      if (plan.animator.selectors[i].when === when) return true;
+    }
+  }
+  return false;
+}
+
+/* Key times for the in and out halves, or a human reason when the layer is short. */
+function qkTextPlanSpan(layer, plan) {
+  var inPoint = 0;
+  var outPoint = 0;
+  try {
+    inPoint = layer.inPoint;
+    outPoint = layer.outPoint;
+  } catch (ePoints) {
+    return { error: "has no in or out point" };
+  }
+  if (!(outPoint > inPoint)) return { error: "has no duration" };
+
+  var delay = plan.params.delay;
+  var needIn = plan.edges !== "out" && qkTextPlanUses(plan, "in");
+  var needOut = plan.edges !== "in" && qkTextPlanUses(plan, "out");
+  var inStart = inPoint + delay;
+  var inEnd = inStart + plan.inDuration;
+  var outEnd = outPoint - delay;
+  var outStart = outEnd - plan.outDuration;
+
+  if (needIn && inEnd > outPoint + 0.0001) {
+    return { error: "is shorter than the " + plan.inDuration + " s in animation" };
+  }
+  if (needOut && outStart < inPoint - 0.0001) {
+    return { error: "is shorter than the " + plan.outDuration + " s out animation" };
+  }
+  if (needIn && needOut && inEnd > outStart + 0.0001) {
+    return {
+      error: "is too short for both animations (needs about " +
+        Math.round((plan.inDuration + plan.outDuration + delay * 2) * 100) / 100 + " s)"
+    };
+  }
+
+  return {
+    inPoint: inPoint,
+    outPoint: outPoint,
+    inStart: inStart,
+    inEnd: inEnd,
+    outStart: outStart,
+    outEnd: outEnd
+  };
+}
+
+function qkTextPlanLayerProp(layer, channel) {
+  try {
+    if (channel === "opacity") return layer.opacity;
+    if (channel === "position") return layer.position;
+    if (channel === "scale") return layer.scale;
+    if (channel === "rotation") return layer.rotation;
+  } catch (eProp) {}
+  return null;
+}
+
+function qkTextPlanBase(prop, channel) {
+  var value = null;
+  try {
+    value = prop.value;
+  } catch (eValue) {
+    return null;
+  }
+  if (channel === "opacity") return qkTextPlanNumber(value, 100);
+  if (channel === "rotation") return qkTextPlanNumber(value, 0);
+  return qkTextCopy(value);
+}
+
+function qkTextPlanResolve(channel, value, base) {
+  if (value === "base" || value === undefined) return qkTextCopy(base);
+
+  if (channel === "opacity") return Math.max(0, Math.min(100, qkTextPlanNumber(value, 100)));
+
+  if (channel === "rotation") {
+    var deg = qkTextPlanIsObject(value) ? qkTextPlanNumber(value.deg, 0) : qkTextPlanNumber(value, 0);
+    return qkTextPlanNumber(base, 0) + deg;
+  }
+
+  if (channel === "position") {
+    var dx = qkTextPlanIsObject(value) ? qkTextPlanNumber(value.dx, 0) : 0;
+    var dy = qkTextPlanIsObject(value) ? qkTextPlanNumber(value.dy, 0) : 0;
+    var moved = qkTextCopy(base);
+    if (!moved || typeof moved.length === "undefined" || moved.length < 2) return base;
+    moved[0] = qkTextPlanNumber(moved[0], 0) + dx;
+    moved[1] = qkTextPlanNumber(moved[1], 0) + dy;
+    return moved;
+  }
+
+  /* scale: targets are multipliers of the layer's own scale, so any scale
+     value (including non-uniform and 3D) keeps its ratio. */
+  var mx = qkTextPlanIsObject(value) ? qkTextPlanNumber(value.mx, 1) : 1;
+  var my = qkTextPlanIsObject(value) ? qkTextPlanNumber(value.my, 1) : 1;
+  var scaled = qkTextCopy(base);
+  if (!scaled || typeof scaled.length === "undefined" || scaled.length < 2) return base;
+  scaled[0] = qkTextPlanNumber(scaled[0], 100) * mx;
+  scaled[1] = qkTextPlanNumber(scaled[1], 100) * my;
+  return scaled;
+}
+
+/* Times for one program. Loops tile across the whole layer span. */
+function qkTextPlanTimes(program, span, layer) {
+  var out = [];
+  var i;
+  var k;
+
+  if (program.when !== "loop") {
+    var start = program.when === "in" ? span.inStart : span.outStart;
+    var length = program.when === "in" ? (span.inEnd - span.inStart) : (span.outEnd - span.outStart);
+    for (i = 0; i < program.keys.length; i++) {
+      out.push({ t: start + program.keys[i].at * length, v: program.keys[i].v });
+    }
+    return out;
+  }
+
+  var layerStart = span.inPoint;
+  var layerEnd = span.outPoint;
+  var period = program.period > 0.05 ? program.period : Math.max(0.1, layerEnd - layerStart);
+  var cycle = 0;
+
+  while (cycle < 100) {
+    var base = layerStart + cycle * period;
+    if (base >= layerEnd - 0.0001) break;
+    for (i = 0; i < program.keys.length; i++) {
+      var at = base + program.keys[i].at * period;
+      if (at <= layerEnd + 0.0001) out.push({ t: at, v: program.keys[i].v });
+      if (out.length >= QK_TEXT_PLAN_KEY_LIMIT) break;
+    }
+    if (out.length >= QK_TEXT_PLAN_KEY_LIMIT) break;
+    cycle++;
+  }
+
+  /* Close the loop on the value it started with, so the last frame does not
+     jump when the layer ends mid-cycle. */
+  if (out.length && program.keys.length) {
+    var last = out[out.length - 1];
+    if (last.t < layerEnd - 0.0001) out.push({ t: layerEnd, v: program.keys[0].v });
+  }
+
+  return out;
+}
+
+function qkTextPlanEaseRange(prop, from, to, easing) {
+  if (from < 1) from = 1;
+  if (to > prop.numKeys) to = prop.numKeys;
+  for (var i = from; i <= to; i++) {
+    if (easing === "linear") {
+      try {
+        prop.setInterpolationTypeAtKey(i, KeyframeInterpolationType.LINEAR, KeyframeInterpolationType.LINEAR);
+      } catch (eLinear) {}
+    } else {
+      qkSetKeyEase(prop, i, easing === "snappy" ? 80 : 33.33);
+    }
+  }
+}
+
+function qkTextPlanIsOurs(layer) {
+  var comment = "";
+  try {
+    comment = qkStr(layer.comment);
+  } catch (eComment) {
+    comment = "";
+  }
+  return comment.indexOf(QK_TEXT_MARKER + "|") === 0;
+}
+
+/* Removes every key and animator QuickKit added to this layer, and only when
+   the layer carries our own marker. A layer the user keyed by hand is never
+   touched. */
+function qkTextPlanClear(layer) {
+  var channels = ["opacity", "position", "scale", "rotation"];
+  var i;
+
+  for (i = 0; i < channels.length; i++) {
+    var prop = qkTextPlanLayerProp(layer, channels[i]);
+    if (!prop) continue;
+    try {
+      if (prop.numKeys > 0) qkTextRemoveKeys(prop);
+    } catch (eKeys) {}
+  }
+
+  var animators = null;
+  try {
+    animators = layer.property("ADBE Text Properties").property("ADBE Text Animators");
+  } catch (eAnimators) {
+    animators = null;
+  }
+  if (animators) {
+    for (i = animators.numProperties; i >= 1; i--) {
+      var animator = null;
+      try {
+        animator = animators.property(i);
+      } catch (eAnimator) {
+        animator = null;
+      }
+      if (!animator) continue;
+      if (qkStr(animator.name).indexOf("QuickKit ") === 0) {
+        try {
+          animator.remove();
+        } catch (eRemove) {}
+      }
+    }
+  }
+
+  try {
+    layer.comment = "";
+  } catch (eClear) {}
+}
+
+function qkTextPlanProblem(layer, plan) {
+  var channels = ["opacity", "position", "scale", "rotation"];
+  var i;
+  for (i = 0; i < channels.length; i++) {
+    var used = false;
+    for (var k = 0; k < plan.layer.length; k++) {
+      if (plan.layer[k].channel === channels[i]) used = true;
+    }
+    if (!used) continue;
+    var prop = qkTextPlanLayerProp(layer, channels[i]);
+    if (!prop) return "has no " + channels[i];
+    try {
+      if (prop.numKeys > 0) return "already has " + channels[i] + " keyframes";
+    } catch (eKeys) {}
+    try {
+      if (prop.expressionEnabled) return "has an expression on " + channels[i];
+    } catch (eExpression) {}
+  }
+  return "";
+}
+
+function qkTextPlanApplyLayerPrograms(layer, plan, span, warnings) {
+  var i;
+  var k;
+  var index;
+
+  for (i = 0; i < plan.layer.length; i++) {
+    var program = plan.layer[i];
+    if (program.when === "in" && plan.edges === "out") continue;
+    if (program.when === "out" && plan.edges === "in") continue;
+
+    var prop = qkTextPlanLayerProp(layer, program.channel);
+    if (!prop) return { error: "has no " + program.channel };
+    var base = qkTextPlanBase(prop, program.channel);
+    if (base === null || typeof base === "undefined") return { error: "cannot read its " + program.channel };
+
+    var events = qkTextPlanTimes(program, span, layer);
+    var first = prop.numKeys + 1;
+
+    for (k = 0; k < events.length; k++) {
+      var time = events[k].t;
+      if (time < span.inPoint - 0.0001) time = span.inPoint;
+      if (time > span.outPoint + 0.0001) time = span.outPoint;
+      var value = qkTextPlanResolve(program.channel, events[k].v, base);
+      try {
+        prop.setValueAtTime(time, value);
+      } catch (eSet) {
+        return { error: "could not key its " + program.channel + " (" + qkErrText(eSet) + ")" };
+      }
+    }
+
+    index = prop.numKeys;
+    if (index >= first) qkTextPlanEaseRange(prop, first, index, program.ease || plan.params.easing);
+  }
+
+  return { ok: true };
+}
+
+function qkTextPlanFontSize(layer) {
+  var doc = null;
+  try {
+    doc = layer.property("ADBE Text Properties").property("ADBE Text Document").value;
+  } catch (eDoc) {
+    doc = null;
+  }
+  var size = doc ? qkTextPlanNumber(doc.fontSize, 48) : 48;
+  if (!(size > 0)) size = 48;
+  return size;
+}
+
+function qkTextPlanAnimatorProp(animator, channel) {
+  var props = null;
+  try {
+    props = animator.property("ADBE Text Animator Properties");
+  } catch (eProps) {
+    props = null;
+  }
+  if (!props) return null;
+
+  var name = "";
+  if (channel === "opacity") name = "ADBE Text Opacity";
+  else if (channel === "blur") name = "ADBE Text Blur";
+  else if (channel === "position") name = "ADBE Text Position 3D";
+  else if (channel === "scale") name = "ADBE Text Scale 3D";
+  else if (channel === "rotation") name = "ADBE Text Rotation";
+  else if (channel === "tracking") name = "ADBE Text Tracking Amount";
+  if (name === "") return null;
+
+  var prop = null;
+  try {
+    prop = props.addProperty(name);
+  } catch (eAdd) {
+    prop = null;
+  }
+  return prop;
+}
+
+function qkTextPlanAnimatorValue(channel, value, unit, fontSize) {
+  if (channel === "position") {
+    var x = value instanceof Array ? qkTextPlanNumber(value[0], 0) : 0;
+    var y = value instanceof Array ? qkTextPlanNumber(value[1], 0) : 0;
+    if (unit === "em") {
+      x = x * fontSize;
+      y = y * fontSize;
+    }
+    return [x, y, 0];
+  }
+  if (channel === "scale") {
+    var sx = value instanceof Array ? qkTextPlanNumber(value[0], 100) : 100;
+    var sy = value instanceof Array ? qkTextPlanNumber(value[1], 100) : sx;
+    return [sx, sy, 100];
+  }
+  return qkTextPlanNumber(value, 0);
+}
+
+function qkTextPlanSetValue(prop, value) {
+  if (value instanceof Array) {
+    qkTextSetAmount(prop, value);
+    return;
+  }
+  qkTextSetAmount(prop, value);
+}
+
+function qkTextPlanSelectorAdvanced(selector) {
+  var advanced = null;
+  try {
+    advanced = selector.property("ADBE Text Range Advanced");
+  } catch (eAdvanced) {
+    advanced = null;
+  }
+  return advanced;
+}
+
+function qkTextPlanConfigureSelector(selector, plan) {
+  var advanced = qkTextPlanSelectorAdvanced(selector);
+
+  try {
+    selector.property("ADBE Text Range Units").setValue(1);
+  } catch (eUnits) {}
+  try {
+    if (advanced) advanced.property("ADBE Text Range Units").setValue(1);
+  } catch (eUnits2) {}
+
+  var basedOn = 1;
+  if (plan.animator.basedOn === "words") basedOn = 3;
+  else if (plan.animator.basedOn === "lines") basedOn = 4;
+
+  try {
+    if (advanced) advanced.property("ADBE Text Range Type2").setValue(basedOn);
+  } catch (eType) {}
+  try {
+    if (advanced) advanced.property("ADBE Text Range Type2").setValue(basedOn);
+  } catch (eType2) {}
+
+  var smoothness = plan.animator.smoothness;
+  try {
+    selector.property("ADBE Text Selector Smoothness").setValue(smoothness);
+  } catch (eSmooth) {}
+  try {
+    if (advanced) advanced.property("ADBE Text Range Smoothness").setValue(smoothness);
+  } catch (eSmooth2) {}
+}
+
+function qkTextPlanSelectorProp(selector, end) {
+  var name = end ? "ADBE Text Percent End" : "ADBE Text Percent Start";
+  var prop = null;
+  try {
+    prop = selector.property(name);
+  } catch (eProp) {
+    prop = null;
+  }
+  return prop;
+}
+
+function qkTextPlanApplySelector(selector, program, plan, span, layer, warnings) {
+  qkTextPlanConfigureSelector(selector, plan);
+
+  var list = [
+    { prop: qkTextPlanSelectorProp(selector, false), keys: program.start, label: "selector start" },
+    { prop: qkTextPlanSelectorProp(selector, true), keys: program.end, label: "selector end" }
+  ];
+
+  for (var i = 0; i < list.length; i++) {
+    var entry = list[i];
+    if (!entry.prop || !entry.keys.length) continue;
+    var events = qkTextPlanTimes({ when: program.when, period: program.period, keys: entry.keys }, span, layer);
+    var first = entry.prop.numKeys + 1;
+    for (var k = 0; k < events.length; k++) {
+      var time = events[k].t;
+      if (time < span.inPoint - 0.0001) time = span.inPoint;
+      if (time > span.outPoint + 0.0001) time = span.outPoint;
+      try {
+        entry.prop.setValueAtTime(time, Math.max(0, Math.min(100, events[k].v)));
+      } catch (eSet) {
+        warnings.push("could not key its " + entry.label);
+      }
+    }
+    qkTextPlanEaseRange(entry.prop, first, entry.prop.numKeys, program.ease || plan.params.easing);
+  }
+}
+
+function qkTextPlanApplyAnimator(layer, plan, span, warnings) {
+  if (!plan.animator) return { ok: true };
+
+  var textProps = null;
+  try {
+    textProps = layer.property("ADBE Text Properties");
+  } catch (eText) {
+    textProps = null;
+  }
+  if (!textProps) return { error: "is not a text layer" };
+
+  var animators = null;
+  try {
+    animators = textProps.property("ADBE Text Animators");
+  } catch (eAnimators) {
+    animators = null;
+  }
+  if (!animators) return { error: "has no text animators" };
+
+  var animatorName = plan.animator.name;
+  var i;
+  for (i = animators.numProperties; i >= 1; i--) {
+    var previous = null;
+    try {
+      previous = animators.property(i);
+    } catch (ePrevious) {
+      previous = null;
+    }
+    if (previous && qkStr(previous.name) === animatorName) {
+      try {
+        previous.remove();
+      } catch (eRemove) {
+        return { error: "could not replace its previous " + animatorName + " animator" };
+      }
+    }
+  }
+
+  var animator = null;
+  try {
+    animator = animators.addProperty("ADBE Text Animator");
+  } catch (eAdd) {
+    return { error: "could not add a text animator (" + qkErrText(eAdd) + ")" };
+  }
+  if (!animator) return { error: "could not add a text animator" };
+
+  try {
+    animator.name = animatorName;
+  } catch (eRename) {}
+
+  var fontSize = qkTextPlanFontSize(layer);
+  var props = [];
+  for (i = 0; i < plan.animator.props.length; i++) {
+    var def = plan.animator.props[i];
+    var prop = qkTextPlanAnimatorProp(animator, def.channel);
+    if (!prop) {
+      warnings.push("this After Effects version has no text animator channel for " + def.channel);
+      continue;
+    }
+    try {
+      qkTextPlanSetValue(prop, qkTextPlanAnimatorValue(def.channel, def.value, def.unit, fontSize));
+      props.push(prop);
+    } catch (eValue) {
+      warnings.push("could not set the animator's " + def.channel);
+    }
+  }
+
+  var selectors = null;
+  try {
+    selectors = animator.property("ADBE Text Selectors");
+  } catch (eSelectors) {
+    selectors = null;
+  }
+  if (!selectors) {
+    try {
+      animator.remove();
+    } catch (eCleanup) {}
+    return { error: "the animator has no selectors group" };
+  }
+
+  for (i = 0; i < plan.animator.selectors.length; i++) {
+    var program = plan.animator.selectors[i];
+    if (program.when === "in" && plan.edges === "out") continue;
+    if (program.when === "out" && plan.edges === "in") continue;
+
+    var selector = null;
+    try {
+      selector = selectors.addProperty("ADBE Text Selector");
+    } catch (eSelector) {
+      selector = null;
+    }
+    if (!selector) {
+      warnings.push("a range selector could not be added");
+      continue;
+    }
+    qkTextPlanApplySelector(selector, program, plan, span, layer, warnings);
+  }
+
+  return { ok: true, props: props };
+}
+
+function qkTextPlanApplyToLayer(layer, plan) {
+  if (!qkTextPlanIsText(layer)) return { error: "is not a text layer" };
+
+  var ours = qkTextPlanIsOurs(layer);
+  if (ours) qkTextPlanClear(layer);
+
+  var problem = qkTextPlanProblem(layer, plan);
+  if (problem !== "") return { error: problem };
+
+  var span = qkTextPlanSpan(layer, plan);
+  if (span.error) return { error: span.error };
+
+  var warnings = [];
+  var result = qkTextPlanApplyLayerPrograms(layer, plan, span, warnings);
+  if (result.error) {
+    qkTextPlanClear(layer);
+    return { error: result.error };
+  }
+
+  var animator = qkTextPlanApplyAnimator(layer, plan, span, warnings);
+  if (animator.error) {
+    qkTextPlanClear(layer);
+    return { error: animator.error };
+  }
+
+  try {
+    layer.comment = QK_TEXT_MARKER + "|" + plan.id + "|v" + plan.v;
+  } catch (eComment) {}
+
+  return { ok: true, warnings: warnings };
+}
+
+function qkTextPlanIsText(layer) {
+  return qkTextIsTextLayer(layer);
+}
+
+/* Applies a plan to every selected layer. Caller owns the undo group. */
+function qkTextPresetApplyPlan(plan, layers) {
+  var stats = { applied: 0, locked: [], notText: [], skipped: [], failed: [] };
+
+  for (var i = 0; i < layers.length; i++) {
+    var layer = layers[i];
+    var name = qkStr(layer.name);
+
+    if (layer.locked) {
+      stats.locked.push(name);
+      continue;
+    }
+    if (!qkTextPlanIsText(layer)) {
+      stats.notText.push(name);
+      continue;
+    }
+
+    var result = qkTextPlanApplyToLayer(layer, plan);
+    if (result.error) {
+      stats.skipped.push("\"" + name + "\" " + result.error);
+      continue;
+    }
+    if (result.warnings && result.warnings.length) {
+      stats.skipped.push("\"" + name + "\": " + qkJoin(result.warnings));
+    }
+    stats.applied++;
+  }
+
+  return stats;
+}
+
+function qkTextPresetPayload(payloadJson) {
+  var payload = null;
+  try {
+    payload = qkJsonParse(qkStr(payloadJson));
+  } catch (ePayload) {
+    return { error: "QuickKit could not read that text preset." };
+  }
+  if (!qkTextPlanIsObject(payload)) return { error: "QuickKit could not read that text preset." };
+  return qkTextPlanRead(payload);
+}
+
+/* payload: { plan, silent? } */
+function qkTextPresetApply(payloadJson) {
+  var loaded = qkTextPresetPayload(payloadJson);
+  if (loaded.error) return qkErr(loaded.error);
+  var plan = loaded.plan;
+
+  var ctx = qkGetComp();
+  if (ctx.error) return qkErr(ctx.error);
+  var selection = qkSelectedLayers(ctx.comp);
+  if (selection.error) return qkErr(selection.error);
+
+  var started = qkBeginUndo("QuickKit: " + plan.name);
+  var stats = qkTextPresetApplyPlan(plan, selection.layers);
+  qkEndUndo(started);
+
+  var edges = plan.edges === "both" ? "in and out" : plan.edges;
+  var message = "Applied \"" + plan.name + "\" (" + edges + ") to " +
+    qkPlural(stats.applied, "layer", "layers") + ".";
+
+  if (stats.applied === 0) {
+    message = "\"" + plan.name + "\" changed nothing.";
+    if (stats.notText.length) message += " Needs text layers; skipped: " + qkJoin(stats.notText) + ".";
+    if (stats.locked.length) message += " Locked: " + qkJoin(stats.locked) + ".";
+    if (stats.skipped.length) message += " Skipped: " + qkJoin(stats.skipped) + ".";
+    return qkErr(message);
+  }
+
+  if (stats.locked.length) message += " Skipped locked: " + qkJoin(stats.locked) + ".";
+  if (stats.notText.length) message += " Skipped, not a text layer: " + qkJoin(stats.notText) + ".";
+  if (stats.skipped.length) message += " " + qkJoin(stats.skipped) + ".";
+  return qkOk(message);
+}
+
+/* ============================================================
+ * MOGRT export (Part 6C)
+ *
+ * API (Adobe AE scripting guide, AE 15.0+):
+ *   comp.motionGraphicsTemplateName = "Name"
+ *   comp.exportAsMotionGraphicsTemplate(true, "<destination folder>")
+ *   prop.addToMotionGraphicsTemplateAs(comp, "Control name")
+ *
+ * The save prompt is the one manual step: QuickKit deliberately does not call
+ * the project's own save method, because that would write the user's file.
+ * ============================================================ */
+
+function qkTextMogrtSafeName(value) {
+  var name = qkPresetCleanText(value, 60) || "QuickKit Text Preset";
+  name = name.replace(/[\\\/:*?"<>|]/g, "-");
+  return name;
+}
+
+function qkTextMogrtExpression() {
+  return [
+    "var ctrl = thisComp.layer(\"QuickKit Controls\");",
+    "var d = ctrl.effect(\"Delay (s)\")(\"Slider\");",
+    "var sp = ctrl.effect(\"Speed (%)\")(\"Slider\") / 100;",
+    "if (sp <= 0) { sp = 1; }",
+    "valueAtTime(Math.max(0, time - d) * sp)"
+  ].join("\n");
+}
+
+function qkTextMogrtExpose(prop, comp, name, warnings) {
+  if (!prop) return false;
+  try {
+    if (prop.canAddToMotionGraphicsTemplate(comp)) {
+      prop.addToMotionGraphicsTemplateAs(comp, name);
+      return true;
+    }
+  } catch (eExpose) {
+    warnings.push("could not expose " + name + " (" + qkErrText(eExpose) + ")");
+    return false;
+  }
+  return false;
+}
+
+function qkTextMogrtAddSlider(nullLayer, name, value) {
+  var effects = null;
+  try {
+    effects = nullLayer.property("ADBE Effect Parade");
+  } catch (eEffects) {
+    effects = null;
+  }
+  if (!effects) return null;
+
+  var effect = null;
+  try {
+    effect = effects.addProperty("ADBE Slider Control");
+  } catch (eAdd) {
+    effect = null;
+  }
+  if (!effect) return null;
+
+  try {
+    effect.name = name;
+  } catch (eRename) {}
+  try {
+    effect.property("Slider").setValue(value);
+  } catch (eValue) {}
+  return effect;
+}
+
+function qkTextMogrtCenter(layer, comp) {
+  try {
+    var group = layer.property("ADBE Transform Group");
+    var rect = layer.sourceRectAtTime(0, false);
+    group.property("ADBE Anchor Point").setValue([rect.left + rect.width / 2, rect.top + rect.height / 2]);
+    group.property("ADBE Position").setValue([comp.width / 2, comp.height / 2]);
+  } catch (eCenter) {}
+}
+
+function qkTextMogrtFind(compName) {
+  if (!app.project) return null;
+  for (var i = 1; i <= app.project.numItems; i++) {
+    var item = app.project.item(i);
+    if (item && item instanceof CompItem && qkStr(item.name) === compName) return item;
+  }
+  return null;
+}
+
+/* payload: { plan, dir, compName? } */
+function qkTextPresetMogrt(payloadJson) {
+  if (qkHostId() !== "AEFT") {
+    return qkErr("MOGRT export builds the template in After Effects. Premiere Pro cannot export one.");
+  }
+
+  var payload = null;
+  try {
+    payload = qkJsonParse(qkStr(payloadJson));
+  } catch (ePayload) {
+    return qkErr("QuickKit could not read that export request.");
+  }
+  if (!qkTextPlanIsObject(payload)) return qkErr("QuickKit could not read that export request.");
+
+  var loaded = qkTextPlanRead(payload.plan ? payload.plan : payload);
+  if (loaded.error) return qkErr(loaded.error);
+  var plan = loaded.plan;
+
+  var dir = qkTrim(qkStr(payload.dir));
+  if (dir === "") return qkErr("QuickKit did not get a folder for the .mogrt file.");
+  var folder = new Folder(dir);
+  if (!folder.exists && !folder.create()) {
+    return qkErr("QuickKit could not create the folder for the .mogrt file.");
+  }
+
+  if (!app.project) return qkErr("Open a project in After Effects first.");
+
+  var name = qkTextMogrtSafeName(plan.name);
+  var compName = "QuickKit MOGRT - " + name;
+
+  var previous = qkTextMogrtFind(compName);
+  if (previous) {
+    try {
+      previous.remove();
+    } catch (ePrevious) {}
+  }
+
+  var duration = plan.inDuration + plan.outDuration + plan.params.delay * 2 + 1.2;
+  if (duration < 3) duration = 3;
+  if (duration > 30) duration = 30;
+
+  var comp = null;
+  var nullLayer = null;
+  var textLayer = null;
+  var warnings = [];
+  var failure = "";
+
+  try {
+    comp = app.project.items.addComp(compName, 1920, 1080, 1, duration, 24);
+    comp.bgColor = [0.055, 0.063, 0.078];
+
+    textLayer = comp.layers.addText("QuickKit\n" + name);
+    var textProp = textLayer.property("ADBE Text Properties").property("ADBE Text Document");
+    var doc = textProp.value;
+    doc.fontSize = 104;
+    doc.fillColor = [0.94, 0.95, 0.97];
+    doc.applyFill = true;
+    doc.applyStroke = false;
+    try {
+      doc.justification = ParagraphJustification.CENTER_JUSTIFY;
+    } catch (eJustify) {}
+    textProp.setValue(doc);
+    qkTextMogrtCenter(textLayer, comp);
+
+    try {
+      textLayer.inPoint = 0;
+      textLayer.outPoint = duration;
+    } catch (eSpan) {}
+
+    var applied = qkTextPlanApplyToLayer(textLayer, plan);
+    if (applied.error) {
+      failure = "The preset did not apply to the template text: " + applied.error + ".";
+    } else {
+      if (applied.warnings && applied.warnings.length) warnings = warnings.concat(applied.warnings);
+    }
+
+    nullLayer = comp.layers.addNull(duration);
+    nullLayer.name = "QuickKit Controls";
+    try {
+      nullLayer.enabled = false;
+    } catch (eEnable) {}
+
+    var delayEffect = qkTextMogrtAddSlider(nullLayer, "Delay (s)", 0);
+    var speedEffect = qkTextMogrtAddSlider(nullLayer, "Speed (%)", 100);
+
+    if (!delayEffect || !speedEffect) {
+      warnings.push("the template has no retime controls; the animation stays baked");
+    }
+
+    if (failure === "") {
+      var expression = qkTextMogrtExpression();
+      var i;
+      for (i = 0; i < plan.layer.length; i++) {
+        var prop = qkTextPlanLayerProp(textLayer, plan.layer[i].channel);
+        if (!prop) continue;
+        try {
+          if (prop.numKeys > 0) prop.expression = expression;
+        } catch (eExpression) {
+          warnings.push("could not retime " + plan.layer[i].channel);
+        }
+      }
+
+      if (plan.animator) {
+        var animators = null;
+        try {
+          animators = textLayer.property("ADBE Text Properties").property("ADBE Text Animators");
+        } catch (eAnimators) {
+          animators = null;
+        }
+        if (animators) {
+          for (i = 1; i <= animators.numProperties; i++) {
+            var animator = null;
+            try {
+              animator = animators.property(i);
+            } catch (eAnimator) {
+              animator = null;
+            }
+            if (!animator) continue;
+            var selectors = null;
+            try {
+              selectors = animator.property("ADBE Text Selectors");
+            } catch (eSelectors) {
+              selectors = null;
+            }
+            if (!selectors) continue;
+            for (var s = 1; s <= selectors.numProperties; s++) {
+              var selector = selectors.property(s);
+              var startProp = qkTextPlanSelectorProp(selector, false);
+              var endProp = qkTextPlanSelectorProp(selector, true);
+              try {
+                if (startProp && startProp.numKeys > 0) startProp.expression = expression;
+              } catch (eStart) {}
+              try {
+                if (endProp && endProp.numKeys > 0) endProp.expression = expression;
+              } catch (eEnd) {}
+            }
+          }
+        }
+      }
+
+      var textDoc = textLayer.property("ADBE Text Properties").property("ADBE Text Document");
+      qkTextMogrtExpose(textDoc, comp, "Text", warnings);
+      qkTextMogrtExpose(delayEffect, comp, "Delay (s)", warnings);
+      qkTextMogrtExpose(speedEffect, comp, "Speed (%)", warnings);
+
+      try {
+        comp.motionGraphicsTemplateName = name;
+      } catch (eName) {
+        failure = "After Effects did not accept the template name.";
+      }
+    }
+  } catch (eBuild) {
+    failure = qkErrText(eBuild);
+  }
+
+  if (failure !== "" && comp) {
+    try {
+      comp.remove();
+    } catch (eRemoveFailed) {}
+    return qkErr("MOGRT export stopped: " + failure + ".");
+  }
+
+  var exported = false;
+  var exportError = "";
+  try {
+    exported = comp.exportAsMotionGraphicsTemplate(true, dir);
+  } catch (eExport) {
+    exportError = qkErrText(eExport);
+    exported = false;
+  }
+
+  var filePath = dir + "/" + name + ".mogrt";
+  var file = new File(filePath);
+
+  /* Manual fallback: the comp stays open in Essential Graphics so the user can
+     press Export Motion Graphics Template themselves. */
+  if (!exported || !file.exists) {
+    try {
+      comp.openInEssentialGraphics();
+    } catch (eOpen) {}
+
+    return qkJsonStringify({
+      ok: false,
+      manual: true,
+      name: name,
+      dir: dir,
+      file: filePath,
+      comp: compName,
+      error: exportError !== "" ? exportError :
+        "After Effects did not finish the export. The template comp is open in Essential Graphics.",
+      warnings: warnings
+    });
+  }
+
+  try {
+    if (nullLayer) nullLayer.remove();
+  } catch (eRemoveNull) {}
+  try {
+    comp.remove();
+  } catch (eRemoveComp) {}
+
+  return qkJsonStringify({
+    ok: true,
+    manual: false,
+    name: name,
+    dir: dir,
+    file: filePath,
+    comp: compName,
+    warnings: warnings
+  });
+}
+
+/* ============================================================
  * Preset manager — JSON, files and storage
  * ============================================================ */
 
@@ -6508,7 +7623,7 @@ function qkLibraryApply(payloadJson) {
   var filePath = qkStr(payload.path);
   var itemName = qkPresetCleanText(payload.name, 60) || "that item";
   if (filePath === "") return qkErr("The item file is missing from the library folder.");
-  if (kind !== "qkpreset" && kind !== "ffx") {
+  if (kind !== "qkpreset" && kind !== "ffx" && kind !== "qktextpreset") {
     return qkErr("QuickKit cannot apply that kind of item in After Effects yet.");
   }
 
@@ -6534,6 +7649,19 @@ function qkLibraryApply(payloadJson) {
         checked = result.appliedProps;
         notes = result.notes;
         failure = result.error;
+      }
+    } else if (kind === "qktextpreset") {
+      var planFile = qkTextPlanFromFile(filePath);
+      if (planFile.error) {
+        failure = planFile.error;
+      } else {
+        var textStats = qkTextPresetApplyPlan(planFile.plan, selection.layers);
+        applied = textStats.applied;
+        checked = applied;
+        notes = textStats.skipped.slice(0);
+        if (textStats.locked.length) notes.push("locked: " + qkJoin(textStats.locked));
+        if (textStats.notText.length) notes.push("not text: " + qkJoin(textStats.notText));
+        if (applied === 0) failure = "Nothing in \"" + itemName + "\" fits the selected layers.";
       }
     } else {
       var ffx = qkPreviewApplyFfx(filePath, selection.layers);
@@ -6644,13 +7772,20 @@ function qkPreviewGenerate(payloadJson) {
   var kind = qkStr(payload.kind);
   var filePath = qkStr(payload.path);
   var dir = qkTrim(qkStr(payload.dir));
-  if (kind !== "qkpreset" && kind !== "ffx") return qkErr("That item cannot be previewed by rendering.");
+  if (kind !== "qkpreset" && kind !== "ffx" && kind !== "qktextpreset") {
+    return qkErr("That item cannot be previewed by rendering.");
+  }
   if (dir === "") return qkErr("QuickKit did not get a folder for the preview frames.");
   if (!app.project) return qkErr("Open a project in After Effects first.");
 
+  var textPlan = null;
   if (kind === "qkpreset") {
     var loaded = qkPreviewReadPreset(filePath);
     if (loaded.error) return qkErr(loaded.error);
+  } else if (kind === "qktextpreset") {
+    var planFile = qkTextPlanFromFile(filePath);
+    if (planFile.error) return qkErr(planFile.error);
+    textPlan = planFile.plan;
   } else {
     var ffxFile = new File(filePath);
     if (!ffxFile || !ffxFile.exists) return qkErr("The .ffx file is missing from the library folder.");
@@ -6687,7 +7822,7 @@ function qkPreviewGenerate(payloadJson) {
 
     comp.layers.addSolid([0.055, 0.063, 0.078], "Backdrop", width, height, 1);
 
-    var textLayer = comp.layers.addText(name);
+    var textLayer = comp.layers.addText(textPlan ? ("QuickKit\nText") : name);
     var textProp = textLayer.property("ADBE Text Properties").property("ADBE Text Document");
     var doc = textProp.value;
     doc.fontSize = Math.round(height * 0.1);
@@ -6703,6 +7838,14 @@ function qkPreviewGenerate(payloadJson) {
       appliedProps = applied.appliedProps;
       applyNotes = applied.notes;
       if (applied.error !== "") failure = applied.error;
+    } else if (kind === "qktextpreset") {
+      var textApplied = qkTextPlanApplyToLayer(textLayer, textPlan);
+      if (textApplied.error) failure = textApplied.error;
+      else {
+        appliedLayers = 1;
+        appliedProps = 1;
+        applyNotes = textApplied.warnings || [];
+      }
     } else {
       var ffxApplied = qkPreviewApplyFfx(filePath, [textLayer]);
       if (ffxApplied.error) failure = ffxApplied.error;

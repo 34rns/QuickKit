@@ -196,28 +196,27 @@
       </section>
 
       <section class="qk-panel" id="qk-panel-text" data-panel="text" aria-label="Text animations" hidden>
-        <p class="qk-panel__lead">Pick an animation, tune the timing, then apply it to the text layers selected in the Timeline.</p>
+        <p class="qk-panel__lead">Pick a preset, tune it, then apply it to the text layers selected in the Timeline. After the first apply, parameter changes update the selected layers live.</p>
 
-        <div class="qk-presets" role="group" aria-label="Text animation preset">
-          <button type="button" class="qk-preset" data-text-preset="fade" aria-pressed="true" data-tip="Fade the layer's opacity in and out">Fade</button>
-          <button type="button" class="qk-preset" data-text-preset="slide" aria-pressed="false" data-tip="Slide the layer in from one side and back out">Slide</button>
-          <button type="button" class="qk-preset" data-text-preset="pop" aria-pressed="false" data-tip="Scale up from 80 per cent with a soft landing">Scale pop</button>
-          <button type="button" class="qk-preset" data-text-preset="typewriter" aria-pressed="false" data-tip="Reveal characters one by one with a named, editable text animator">Typewriter</button>
-          <button type="button" class="qk-preset" data-text-preset="stagger" aria-pressed="false" data-tip="Characters fade and rise into place with a named text animator">Stagger</button>
-          <button type="button" class="qk-preset" data-text-preset="blur" aria-pressed="false" data-tip="Characters sharpen from a blur with a named text animator">Blur reveal</button>
-        </div>
+        <label class="qk-field"><span class="qk-label">Category</span>
+          <select class="qk-select" id="qk-text-category" data-tip="Filter the preset grid by category">
+            <option value="all">All categories</option>
+          </select>
+        </label>
+
+        <div class="qk-presets qk-text-grid" id="qk-text-presets" role="group" aria-label="Text animation presets"></div>
 
         <div class="qk-text-stage" id="qk-text-stage" aria-hidden="true">
           <div class="qk-text-stage__sample" id="qk-text-sample">QuickKit</div>
         </div>
-        <p class="qk-panel__hint" id="qk-text-note">Fades the layer's own opacity from 0 to its current value, then back to 0.</p>
+        <p class="qk-panel__hint" id="qk-text-note">Fades the layer's own opacity in, then back out.</p>
 
         <div class="qk-field-row">
           <label class="qk-field"><span class="qk-label">Duration (s)</span>
-            <input class="qk-input" id="qk-text-duration" type="number" value="0.6" min="0.1" max="60" step="0.1" data-tip="How long the in and out animations last">
+            <input class="qk-input" id="qk-text-duration" type="number" value="0.6" min="0.05" max="60" step="0.05" data-tip="How long the in and out animations last">
           </label>
           <label class="qk-field"><span class="qk-label">Delay (s)</span>
-            <input class="qk-input" id="qk-text-delay" type="number" value="0" min="0" max="60" step="0.1" data-tip="Wait this long after the in point and before the out point">
+            <input class="qk-input" id="qk-text-delay" type="number" value="0" min="0" max="60" step="0.05" data-tip="Wait this long after the in point and before the out point">
           </label>
         </div>
 
@@ -229,9 +228,9 @@
           </select>
         </label>
 
-        <div class="qk-field-row" id="qk-text-slide-controls">
+        <div class="qk-field-row" id="qk-text-move-row">
           <label class="qk-field"><span class="qk-label">From</span>
-            <select class="qk-select" id="qk-text-direction" data-tip="The side the layer comes from and leaves towards">
+            <select class="qk-select" id="qk-text-direction" data-tip="The side the layer or characters come from">
               <option value="left">Left</option>
               <option value="right">Right</option>
               <option value="up">Above</option>
@@ -239,7 +238,16 @@
             </select>
           </label>
           <label class="qk-field"><span class="qk-label">Distance (px)</span>
-            <input class="qk-input" id="qk-text-distance" type="number" value="80" min="1" max="4000" step="10" data-tip="How far away the slide starts">
+            <input class="qk-input" id="qk-text-distance" type="number" value="80" min="1" max="4000" step="10" data-tip="How far away the movement starts">
+          </label>
+        </div>
+
+        <div class="qk-field-row" id="qk-text-tune-row">
+          <label class="qk-field" id="qk-text-stagger-row"><span class="qk-label">Stagger <span id="qk-text-stagger-value">0%</span></span>
+            <input class="qk-range" id="qk-text-stagger" type="range" value="0" min="0" max="100" step="1" data-tip="Softness between characters or words; 0 is a hard cut">
+          </label>
+          <label class="qk-field" id="qk-text-overshoot-row"><span class="qk-label">Overshoot <span id="qk-text-overshoot-value">0%</span></span>
+            <input class="qk-range" id="qk-text-overshoot" type="range" value="0" min="0" max="60" step="1" data-tip="How far the move passes the target before settling">
           </label>
         </div>
 
@@ -255,8 +263,19 @@
         </div>
 
         <button type="button" class="qk-btn qk-btn--primary qk-btn--block qk-action" id="qk-text-apply"
-                data-tip="Apply the chosen animation to every selected layer">Apply to selected layers</button>
-        <p class="qk-panel__hint">Fade, slide and scale pop use the layer's own transform. Typewriter, stagger and blur add a named text animator you can keep editing. One Ctrl+Z undoes the press.</p>
+                data-tip="Apply the chosen animation to every selected text layer">Apply to selected layers</button>
+
+        <div class="qk-field-row">
+          <button type="button" class="qk-btn qk-action" id="qk-text-mogrt"
+                  data-tip="Build a template comp, expose Text and the retime controls, and write a .mogrt into the library">Export MOGRT</button>
+          <button type="button" class="qk-btn qk-action" id="qk-text-mogrt-all"
+                  data-tip="Export every text preset as a .mogrt, one after another">Export all 54</button>
+        </div>
+        <button type="button" class="qk-btn qk-btn--block" id="qk-text-cancel" hidden
+                data-tip="Stop after the preset that is exporting now">Cancel export</button>
+        <p class="qk-panel__hint" id="qk-text-progress" hidden></p>
+
+        <p class="qk-panel__hint">Presets key the layer's own transform or add a named text animator, so the result stays editable. Re-applying replaces QuickKit's own keys. One Ctrl+Z undoes the press. MOGRT export is After Effects only and may ask you to save the project: choose <strong>Don't Save</strong>.</p>
       </section>
 
       <section class="qk-panel" id="qk-panel-easing" data-panel="easing" aria-label="Easing" hidden>
@@ -700,6 +719,7 @@
   <script src="js/csinterface-lite.js"></script>
   <script src="js/library-core.js"></script>
   <script src="js/preview-core.js"></script>
+  <script src="js/text-presets.js"></script>
   <script src="js/panel.js"></script>
 </body>
 </html>

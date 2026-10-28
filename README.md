@@ -4,12 +4,13 @@ A free, local-only panel for **Adobe After Effects** and **Adobe Premiere Pro**
 on Windows 10 and 11. One extension, eight tools, no account, no cloud, no
 tracking.
 
-Version **0.8.0** — Part 6B: a pinned **preview pane** for the Library. Click a
-card and it plays in place; Apply or double-click puts it on your layers, and
-After Effects can render real previews of your own presets. It joins Part 6A's
-shared library (nested folders, smart collections, search, `.qkpack` sharing,
-Repair), the live After Effects tools (anchor, text, layers, easing, presets),
-the Premiere silence cutter, the Bridge, and the Part 1 shell and installer.
+Version **0.9.0** — Part 6C: a **data-driven text animation library** — 54
+original presets in 12 categories, a live parameter panel, and one-click
+**MOGRT export** into the shared library (single or all 54, with cancel). It
+joins Part 6B's preview pane, Part 6A's shared library (nested folders, smart
+collections, search, `.qkpack` sharing, Repair), the live After Effects tools
+(anchor, layers, easing, presets), the Premiere silence cutter, the Bridge, and
+the Part 1 shell and installer.
 
 ---
 
@@ -29,6 +30,11 @@ the Premiere silence cutter, the Bridge, and the Part 1 shell and installer.
   arrow keys to browse, Space for play/pause, Enter for the item menu,
   double-click or Apply to use the item. Cards stay cheap; only the selected
   item's clip is ever loaded.
+- A **Text** tab with **54 original presets** in 12 categories. Every preset is
+  a data definition compiled into real keyframes or a named text animator, so
+  the result stays editable; the parameter panel re-applies live to the selected
+  layers, and **Export MOGRT** (one or all 54, with Cancel) writes Premiere-ready
+  templates into the Library.
 - A **Silence cutter** for Premiere Pro: FFmpeg finds the gaps in the sequence
   audio, you check them on a waveform, then cut them out in one undo step.
 - A **Bridge** between the two apps: send selected Premiere clips to After
@@ -81,21 +87,37 @@ action.
   keyframe is skipped and the message says why.
 
 ### Text
-Six presets for titles and lower thirds, with duration, delay, easing and
-independent **Animate in** / **Animate out** edges placed at the layer's in and
-out points.
-- **Fade, slide, scale pop** write normal keyframes on the layer's own opacity,
-  position or scale. Slide has a direction and distance; pop starts at 80% of
-  the current scale. They refuse to overwrite an existing keyframe or an
-  expression on that property.
-- **Typewriter, character stagger, blur reveal** add a named, editable text
-  animator (`QuickKit Typewriter`, `QuickKit Character Stagger`, `QuickKit Blur
-  Reveal`) and key its Range Selector **Start** percentage. The Source Text is
-  never changed, so the words stay editable and the tracking does not reflow.
-- Pressing the same preset twice replaces its animator instead of stacking a
-  second copy. Other animators on the layer are left alone.
-- The Text tab shows a live preview of the selected preset. It is panel-side
-  only and never calls the app.
+**54 original text presets** in 12 categories — Fade, Slide, Scale/Pop,
+Typewriter, Per-character, Per-word, Blur/Reveal, Rotate/Flip, Glitch,
+Wave/Bounce, Loop/Idle and Out animations — built from data, not scripts.
+- Each preset declares whether it animates **in**, **out** or both, and which
+  parameters it exposes: **duration, delay, direction, easing, stagger,
+  overshoot and distance**. The panel shows only those controls for the chosen
+  preset, with sensible defaults.
+- **Apply** writes to every selected text layer in one undo group, aligned to
+  each layer's own in/out points. Press Apply once, then drag a slider: the
+  selected layers update **live** until you change the selection or switch
+  preset.
+- Results stay editable. Fade/slide/scale/rotate presets write normal keyframes
+  on the layer's own transform; Typewriter, per-character, per-word, blur and
+  wave presets add a named text animator (`QuickKit Character Rise`,
+  `QuickKit Word Slide`, …) with keyed Range Selectors, so the Source Text is
+  never replaced.
+- Offsets are relative to the layer's own values and per-character distances are
+  in em, so presets work on multi-line text, any font size, any anchor and any
+  justification, and with several layers at once.
+- Re-applying replaces QuickKit's own keys and animators (the layer comment
+  records which preset); a layer you keyed by hand is reported as skipped, never
+  overwritten.
+- The stage preview under the grid approximates each preset in the panel and
+  never calls the app.
+- **Export MOGRT** builds a 1920×1080 comp with the preset applied and the text
+  and retiming controls exposed in Essential Graphics, then writes a `.mogrt`
+  into the Library as a **MOGRT** item. **Export all 54** does the whole
+  catalogue with progress and Cancel. Premiere itself cannot export a MOGRT, so
+  the buttons are After Effects-only.
+- The 54 presets are also seeded into the Library as `.qktextpreset` items, so
+  they get previews and can be applied from there.
 - Text animations are After Effects-only; Premiere shows the tab as
   **Available in After Effects**.
 
@@ -476,6 +498,7 @@ QuickKit/
   index.html
   css\panel.css
   js\panel.js, js\csinterface-lite.js, js\library-core.js, js\library-io.js,
+    js\preview-core.js, js\preview-node.js, js\text-presets.js,
     js\ffmpeg-node.js, js\render-node.js
   design\tokens.css, design\fonts\, design\icons\
   host\quickkit.jsx
@@ -510,6 +533,9 @@ Your own data never goes in the extension folder:
 - Preview tests: `node tests/preview.test.js` (clock, easing, approximation,
   param clamping, signatures, preview files on disk, ffmpeg argument builders
   and a real encode when `bin/ffmpeg` exists).
+- Text preset tests: `node tests/text-presets.test.js` (the 54-preset catalogue,
+  plan compiler purity and clamps, direction/overshoot/stagger, em offsets, the
+  MOGRT API calls in the host, and the panel wiring).
 - Browser preview: `node tests/refresh-preview.js` then open
   `tests/.preview/index.html` (append `?host=PPRO` for the Premiere side; `?many=500`,
   `?slow=1`, `?empty=1` exercise the large library, cancel and empty states) — a
@@ -526,7 +552,10 @@ Your own data never goes in the extension folder:
   `docs/manual-test-checklist-part5.md`,
   `docs/manual-test-checklist-part6.md`,
   `docs/manual-test-checklist-part6a.md`,
-  `docs/manual-test-checklist-part6b.md`.
+  `docs/manual-test-checklist-part6b.md`,
+  `docs/manual-test-checklist-part6c.md`.
+- MOGRT export: the exact API, what can be exposed and where Adobe stops you
+  are written down in `docs/mogrt-export-api.md`.
 
 ---
 

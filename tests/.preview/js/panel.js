@@ -4,7 +4,7 @@
 (function (window, document) {
   "use strict";
 
-  var VERSION = "0.8.0";
+  var VERSION = "0.9.0";
   var WELCOME_KEY = "qk.welcome.v1";
   var HOST_TEST_TIMEOUT = 8000;
   var ACTION_TIMEOUT = 15000;
@@ -29,33 +29,6 @@
     bounce: {
       path: "M 4 96 C 26 96 42 24 58 18 C 64 34 70 18 78 24 C 84 30 88 18 96 18",
       note: "Springs back a few times before settling. Adds four keyframes."
-    }
-  };
-
-  var TEXT_PRESETS = {
-    fade: {
-      note: "Fades the layer's own opacity from 0 to its current value, then back to 0.",
-      chars: false
-    },
-    slide: {
-      note: "Moves the layer's own position in from the chosen side, then back out.",
-      chars: false
-    },
-    pop: {
-      note: "Scales the layer from 80 per cent up to its current scale, eased at both ends.",
-      chars: false
-    },
-    typewriter: {
-      note: "Adds a named QuickKit Typewriter animator. Characters are revealed by a range selector, so the text stays editable.",
-      chars: true
-    },
-    stagger: {
-      note: "Adds a named QuickKit Character Stagger animator: characters fade in with a rising offset, then fade out.",
-      chars: true
-    },
-    blur: {
-      note: "Adds a named QuickKit Blur Reveal animator: characters sharpen out of a blur, then soften again.",
-      chars: true
     }
   };
 
@@ -149,10 +122,16 @@
     preview: false,
     activeTab: "anchor",
     easing: "easy",
-    textPreset: "fade",
+    textPreset: "fade-soft",
     textAnimations: [],
     textTimer: null,
     textResetTimer: null,
+    textApplyTimer: null,
+    textApplying: false,
+    textLive: false,
+    textMogrtPending: null,
+    textMogrtJob: null,
+    textSeeded: 0,
     busy: false,
     undoHinted: false,
     presets: [],
@@ -237,7 +216,28 @@
     els.curveNote = document.getElementById("qk-curve-note");
     els.textSample = document.getElementById("qk-text-sample");
     els.textNote = document.getElementById("qk-text-note");
-    els.textSlideControls = document.getElementById("qk-text-slide-controls");
+    els.textCategory = document.getElementById("qk-text-category");
+    els.textPresets = document.getElementById("qk-text-presets");
+    els.textDuration = document.getElementById("qk-text-duration");
+    els.textDelay = document.getElementById("qk-text-delay");
+    els.textEasing = document.getElementById("qk-text-easing");
+    els.textDirection = document.getElementById("qk-text-direction");
+    els.textDistance = document.getElementById("qk-text-distance");
+    els.textStagger = document.getElementById("qk-text-stagger");
+    els.textStaggerValue = document.getElementById("qk-text-stagger-value");
+    els.textOvershoot = document.getElementById("qk-text-overshoot");
+    els.textOvershootValue = document.getElementById("qk-text-overshoot-value");
+    els.textMoveRow = document.getElementById("qk-text-move-row");
+    els.textTuneRow = document.getElementById("qk-text-tune-row");
+    els.textStaggerRow = document.getElementById("qk-text-stagger-row");
+    els.textOvershootRow = document.getElementById("qk-text-overshoot-row");
+    els.textIn = document.getElementById("qk-text-in");
+    els.textOut = document.getElementById("qk-text-out");
+    els.textApply = document.getElementById("qk-text-apply");
+    els.textMogrt = document.getElementById("qk-text-mogrt");
+    els.textMogrtAll = document.getElementById("qk-text-mogrt-all");
+    els.textCancel = document.getElementById("qk-text-cancel");
+    els.textProgress = document.getElementById("qk-text-progress");
     els.presetSearch = document.getElementById("qk-preset-search");
     els.presetSave = document.getElementById("qk-preset-save");
     els.presetFilters = document.getElementById("qk-preset-filters");
@@ -352,7 +352,7 @@
     bindTooltips();
     initWelcome();
     setEasingPreset("easy");
-    setTextPreset("fade", false);
+    textPresetInit();
     bindPresets();
     bindLibrary();
     bindSilence();
@@ -460,7 +460,7 @@
     });
 
     renderContent();
-    if (id === "text") scheduleTextPreview();
+    if (id === "text") textOnShow();
     if (id === "silence") silenceOnShow();
     if (id === "bridge") bridgeOnShow();
     if (id === "presets") {
@@ -826,17 +826,7 @@
     });
 
     document.getElementById("qk-text-apply").addEventListener("click", function () {
-      var args = [
-        qkQuote(state.textPreset),
-        qkQuote(fieldValue("qk-text-duration") || "0.6"),
-        qkQuote(fieldValue("qk-text-delay") || "0"),
-        qkQuote(document.getElementById("qk-text-easing").value),
-        qkQuote(document.getElementById("qk-text-in").checked ? "1" : "0"),
-        qkQuote(document.getElementById("qk-text-out").checked ? "1" : "0"),
-        qkQuote(document.getElementById("qk-text-direction").value),
-        qkQuote(fieldValue("qk-text-distance") || "80")
-      ];
-      runHostCall("qkTextApply(" + args.join(", ") + ")", this);
+      textApplyNow(this);
     });
 
     [
@@ -845,14 +835,23 @@
       "qk-text-distance",
       "qk-text-easing",
       "qk-text-direction",
+      "qk-text-stagger",
+      "qk-text-overshoot",
       "qk-text-in",
       "qk-text-out"
     ].forEach(function (id) {
       var field = document.getElementById(id);
       if (!field) return;
-      field.addEventListener("input", scheduleTextPreview);
-      field.addEventListener("change", scheduleTextPreview);
+      field.addEventListener("input", textParamChanged);
+      field.addEventListener("change", textParamChanged);
     });
+
+    if (els.textCategory) els.textCategory.addEventListener("change", function () {
+      textRenderGrid();
+    });
+    if (els.textMogrt) els.textMogrt.addEventListener("click", textMogrtClick);
+    if (els.textMogrtAll) els.textMogrtAll.addEventListener("click", textMogrtExportAll);
+    if (els.textCancel) els.textCancel.addEventListener("click", textMogrtCancel);
 
     els.content.addEventListener("click", function (event) {
       var cell = event.target.closest("[data-anchor]");
@@ -868,7 +867,7 @@
       }
 
       var textPreset = event.target.closest("[data-text-preset]");
-      if (textPreset) setTextPreset(textPreset.getAttribute("data-text-preset"));
+      if (textPreset) textSelectPreset(textPreset.getAttribute("data-text-preset"));
     });
   }
 
@@ -911,10 +910,11 @@
   }
 
   function textStageLook(preset) {
+    var look = textPreviewInfo(preset);
     var shift = cssNumber("--qk-text-shift", 14);
     var blur = cssNumber("--qk-text-blur", 6);
     var pop = cssNumber("--qk-text-pop", 0.82);
-    var direction = document.getElementById("qk-text-direction").value;
+    var direction = els.textDirection ? els.textDirection.value : "up";
     var move = "translateX(-" + shift + "px)";
     if (direction === "right") move = "translateX(" + shift + "px)";
     else if (direction === "up") move = "translateY(-" + shift + "px)";
@@ -923,10 +923,15 @@
     var base = { opacity: 1, transform: "translate(0, 0)", filter: "blur(0px)" };
     var hidden = { opacity: 0, transform: "translate(0, 0)", filter: "blur(0px)" };
 
-    if (preset === "slide") hidden.transform = move;
-    if (preset === "pop") hidden.transform = "scale(" + pop + ")";
-    if (preset === "stagger") hidden.transform = "translateY(" + shift * 0.5 + "px)";
-    if (preset === "blur") hidden.filter = "blur(" + blur + "px)";
+    if (look.kind === "slide") hidden.transform = move;
+    else if (look.kind === "pop") hidden.transform = "scale(" + pop + ")";
+    else if (look.kind === "stagger") hidden.transform = "translateY(" + shift * 0.5 + "px)";
+    else if (look.kind === "blur") hidden.filter = "blur(" + blur + "px)";
+    else if (look.kind === "rotate") hidden.transform = "rotate(-12deg)";
+    else if (look.kind === "glitch") {
+      hidden.transform = "translateX(" + shift * 0.7 + "px)";
+      hidden.opacity = 0.4;
+    }
 
     return { base: base, hidden: hidden };
   }
@@ -991,7 +996,7 @@
   function charFrames(preset, index, count, timing, timeline) {
     var look = textStageLook(preset);
     var spread = 0.85;
-    var fade = preset === "typewriter" ? 0.02 : Math.min(0.18, timing.duration * 0.3);
+    var fade = look.kind === "type" ? 0.02 : Math.min(0.18, timing.duration * 0.3);
     var reveal = timeline.inStart + (count > 1 ? (index / count) * timing.duration * spread : 0);
     var hide = timeline.outStart + (count > 1 ? ((count - 1 - index) / count) * timing.duration * spread : 0);
     var frames = [];
@@ -1071,7 +1076,7 @@
     if (!timing.inOn && !timing.outOn) return;
 
     var timeline = textTimeline(timing);
-    var chars = TEXT_PRESETS[preset].chars ? splitTextStage() : null;
+    var chars = textPreviewInfo(preset).chars ? splitTextStage() : null;
     var reduced = false;
     try {
       reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1111,17 +1116,589 @@
   }
 
   function setTextPreset(kind, animate) {
-    if (!TEXT_PRESETS[kind]) return;
-    state.textPreset = kind;
+    textSelectPreset(kind, animate);
+  }
 
+  /* ---------- text preset engine (Part 6C) ---------- */
+
+  function textEngine() {
+    return window.QKTextPresets || null;
+  }
+
+  function textPreviewInfo(id) {
+    var engine = textEngine();
+    if (!engine) return { kind: "fade", chars: false };
+    return engine.previewLook(id);
+  }
+
+  function textPresetDef(id) {
+    var engine = textEngine();
+    return engine ? engine.byId(id) : null;
+  }
+
+  function textHas(list, value) {
+    for (var i = 0; i < list.length; i++) if (list[i] === value) return true;
+    return false;
+  }
+
+  function textParamValues() {
+    var engine = textEngine();
+    var duration = parseFloat(els.textDuration ? els.textDuration.value : "0.6");
+    if (!(duration > 0)) duration = 0.6;
+    var delay = parseFloat(els.textDelay ? els.textDelay.value : "0");
+    if (!(delay >= 0)) delay = 0;
+    var distance = parseFloat(els.textDistance ? els.textDistance.value : "80");
+    if (!(distance > 0)) distance = 80;
+    var stagger = parseFloat(els.textStagger ? els.textStagger.value : "0");
+    if (!(stagger >= 0)) stagger = 0;
+    var overshoot = parseFloat(els.textOvershoot ? els.textOvershoot.value : "0");
+    if (!(overshoot >= 0)) overshoot = 0;
+
+    return {
+      duration: duration,
+      delay: delay,
+      easing: els.textEasing ? els.textEasing.value : "smooth",
+      direction: els.textDirection ? els.textDirection.value : "up",
+      distance: distance,
+      stagger: stagger,
+      overshoot: overshoot
+    };
+  }
+
+  function textEdgeMode() {
+    var inOn = els.textIn ? els.textIn.checked : true;
+    var outOn = els.textOut ? els.textOut.checked : true;
+    if (inOn && outOn) return "both";
+    if (inOn) return "in";
+    if (outOn) return "out";
+    return "";
+  }
+
+  function textBuildPlan() {
+    var engine = textEngine();
+    var def = textPresetDef(state.textPreset);
+    if (!engine || !def) return null;
+    var edges = textEdgeMode();
+    if (edges === "") return null;
+
+    var values = textParamValues();
+    values.edges = edges;
+    return engine.plan(def.id, values);
+  }
+
+  function textUpdateSliderLabels() {
+    if (els.textStaggerValue && els.textStagger) {
+      els.textStaggerValue.textContent = String(Math.round(Number(els.textStagger.value) || 0)) + "%";
+    }
+    if (els.textOvershootValue && els.textOvershoot) {
+      els.textOvershootValue.textContent = String(Math.round(Number(els.textOvershoot.value) || 0)) + "%";
+    }
+  }
+
+  function textRenderParams(def) {
+    var expose = def && def.expose ? def.expose : [];
+    var hasStagger = textHas(expose, "stagger");
+    var hasOvershoot = textHas(expose, "overshoot");
+    var hasDirection = textHas(expose, "direction");
+    var hasDistance = textHas(expose, "distance");
+
+    if (els.textMoveRow) els.textMoveRow.hidden = !(hasDirection || hasDistance);
+    if (els.textStaggerRow) els.textStaggerRow.hidden = !hasStagger;
+    if (els.textOvershootRow) els.textOvershootRow.hidden = !hasOvershoot;
+    if (els.textTuneRow) els.textTuneRow.hidden = !(hasStagger || hasOvershoot);
+  }
+
+  function textApplyPresetDefaults(def) {
+    var engine = textEngine();
+    if (!engine || !def) return;
+    var values = engine.presetParams(def, null);
+
+    if (els.textDuration) els.textDuration.value = String(values.duration);
+    if (els.textDelay) els.textDelay.value = String(values.delay);
+    if (els.textEasing) els.textEasing.value = values.easing;
+    if (els.textDirection) els.textDirection.value = values.direction;
+    if (els.textDistance) els.textDistance.value = String(values.distance);
+    if (els.textStagger) els.textStagger.value = String(values.stagger);
+    if (els.textOvershoot) els.textOvershoot.value = String(values.overshoot);
+    textUpdateSliderLabels();
+  }
+
+  function textApplyEdges(def) {
+    var canIn = !def || def.edges !== "out";
+    var canOut = !def || def.edges !== "in";
+    if (els.textIn) {
+      els.textIn.disabled = !canIn;
+      els.textIn.checked = canIn;
+    }
+    if (els.textOut) {
+      els.textOut.disabled = !canOut;
+      els.textOut.checked = canOut;
+    }
+  }
+
+  function textRenderGrid() {
+    var engine = textEngine();
+    if (!engine || !els.textPresets) return;
+
+    var category = els.textCategory ? els.textCategory.value : "all";
+    var list = engine.inCategory(category);
+    els.textPresets.textContent = "";
+
+    for (var i = 0; i < list.length; i++) {
+      var def = list[i];
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "qk-preset";
+      button.setAttribute("data-text-preset", def.id);
+      button.setAttribute("aria-pressed", def.id === state.textPreset ? "true" : "false");
+      button.setAttribute("data-tip", def.note);
+      button.textContent = def.name;
+      els.textPresets.appendChild(button);
+    }
+  }
+
+  function textSelectPreset(id, animate) {
+    var engine = textEngine();
+    var def = engine ? engine.byId(id) : null;
+    if (!def) return;
+
+    state.textPreset = id;
     qsa("[data-text-preset]").forEach(function (btn) {
-      btn.setAttribute("aria-pressed", btn.getAttribute("data-text-preset") === kind ? "true" : "false");
+      btn.setAttribute("aria-pressed", btn.getAttribute("data-text-preset") === id ? "true" : "false");
     });
 
-    if (els.textNote) els.textNote.textContent = TEXT_PRESETS[kind].note;
-    if (els.textSlideControls) els.textSlideControls.hidden = kind !== "slide";
-    if (animate === false) return;
-    playTextPreview();
+    if (els.textNote) els.textNote.textContent = def.note;
+    textApplyPresetDefaults(def);
+    textRenderParams(def);
+    textApplyEdges(def);
+
+    if (animate !== false) playTextPreview();
+    if (state.textLive) scheduleTextApply();
+  }
+
+  function textPresetInit() {
+    var engine = textEngine();
+    if (!engine || !els.textPresets) return;
+
+    if (els.textCategory) {
+      els.textCategory.textContent = "";
+      var all = document.createElement("option");
+      all.value = "all";
+      all.textContent = "All categories (" + engine.PRESETS.length + ")";
+      els.textCategory.appendChild(all);
+
+      var categories = engine.categories();
+      for (var i = 0; i < categories.length; i++) {
+        if (!categories[i].count) continue;
+        var option = document.createElement("option");
+        option.value = categories[i].name;
+        option.textContent = categories[i].name + " (" + categories[i].count + ")";
+        els.textCategory.appendChild(option);
+      }
+    }
+
+    textRenderGrid();
+    textSelectPreset(engine.PRESETS[0].id, false);
+  }
+
+  function textParamChanged() {
+    textUpdateSliderLabels();
+    scheduleTextPreview();
+    scheduleTextApply();
+  }
+
+  function scheduleTextApply() {
+    if (!state.textLive) return;
+    if (state.textApplyTimer) window.clearTimeout(state.textApplyTimer);
+    state.textApplyTimer = window.setTimeout(function () {
+      state.textApplyTimer = null;
+      textApplyLive();
+    }, 420);
+  }
+
+  function textApplyNow(button) {
+    if (state.busy) return;
+    var plan = textBuildPlan();
+    if (!plan) {
+      showMessage("error", "Turn on Animate in, Animate out, or both.");
+      return;
+    }
+
+    var bridge = window.CSInterfaceLite;
+    if (!bridge || !bridge.isHosted) {
+      showMessage("error", "Open the panel from Window > Extensions inside After Effects, then apply.");
+      return;
+    }
+
+    setBusy(true, button);
+    setStatus("Applying " + plan.name + "\u2026");
+    bridgeCall("qkTextPresetApply(" + qkQuote(JSON.stringify({ plan: plan })) + ")", function (data) {
+      setBusy(false, button);
+      if (!data || !data.ok) {
+        showMessage("error", (data && data.error) || "The text preset was not applied.");
+        setStatus("Nothing applied");
+        return;
+      }
+      state.textLive = true;
+      showMessage("ok", data.message || "Text preset applied.");
+      setStatus("Text preset applied");
+    });
+  }
+
+  function textApplyLive() {
+    if (state.textApplying || !state.textLive) return;
+    var plan = textBuildPlan();
+    if (!plan) return;
+
+    state.textApplying = true;
+    bridgeCall("qkTextPresetApply(" + qkQuote(JSON.stringify({ plan: plan })) + ")", function (data) {
+      state.textApplying = false;
+      if (!data || !data.ok) {
+        state.textLive = false;
+        showMessage("error", "Live update stopped: " + ((data && data.error) || "the layers did not take it.") + " Press Apply again after fixing the selection.");
+        setStatus("Live update stopped");
+        return;
+      }
+      setStatus("Updated " + plan.name);
+    });
+  }
+
+  /* ---------- text MOGRT export (Part 6C) ---------- */
+
+  function textNodeModule(name) {
+    try {
+      if (typeof require === "function") return require(name);
+    } catch (eRequire) {}
+    try {
+      if (typeof window !== "undefined" && typeof window.require === "function") return window.require(name);
+    } catch (eWindowRequire) {}
+    return null;
+  }
+
+  function textMogrtFolder() {
+    var os = textNodeModule("os");
+    var path = textNodeModule("path");
+    if (!os || !path) return "";
+    var dir = path.join(os.tmpdir(), "QuickKit", "mogrt");
+    try {
+      var fs = textNodeModule("fs");
+      if (fs && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    } catch (eMkdir) {}
+    return dir;
+  }
+
+  function textSetProgress(message) {
+    if (!els.textProgress) return;
+    if (!message) {
+      els.textProgress.hidden = true;
+      els.textProgress.textContent = "";
+      return;
+    }
+    els.textProgress.hidden = false;
+    els.textProgress.textContent = message;
+  }
+
+  function textMogrtSetBusy(busy) {
+    if (els.textMogrt) els.textMogrt.disabled = !!busy && !state.textMogrtJob;
+    if (els.textMogrtAll) els.textMogrtAll.disabled = !!busy;
+    if (els.textCancel) els.textCancel.hidden = !busy;
+  }
+
+  function textMogrtExport(plan, done) {
+    var dir = textMogrtFolder();
+    if (!dir) {
+      done({ ok: false, error: "QuickKit could not reach a temp folder for the .mogrt file." });
+      return;
+    }
+    bridgeCall("qkTextPresetMogrt(" + qkQuote(JSON.stringify({ plan: plan, dir: dir })) + ")", done);
+  }
+
+  function textMogrtExists(name) {
+    if (!lib.index || !lib.index.items) return false;
+    for (var i = 0; i < lib.index.items.length; i++) {
+      if (lib.index.items[i].name === name) return true;
+    }
+    return false;
+  }
+
+  function textMogrtSaveFile(data, plan) {
+    var fs = textNodeModule("fs");
+    var api = libApiGet();
+    if (!fs) return { ok: false, error: "QuickKit could not read the exported .mogrt file." };
+    if (!api || !api.itemAdd) return { ok: false, error: lib.apiError || "The library is not available, so the .mogrt was not saved." };
+
+    var name = data.name + " (MOGRT)";
+    if (textMogrtExists(name)) return { ok: true, skipped: true, name: name };
+
+    var buffer = null;
+    try {
+      buffer = fs.readFileSync(data.file);
+    } catch (eRead) {
+      return { ok: false, error: "QuickKit could not read the exported .mogrt file." };
+    }
+
+    var engine = textEngine();
+    var slug = engine ? engine.slug(data.name) : "quickkit-text-preset";
+    var result = api.itemAdd({
+      type: "mogrt",
+      name: name,
+      category: "Text / " + plan.category,
+      tags: ["text", "text-preset", "mogrt", engine ? engine.slug(plan.category) : "text"],
+      hostSupport: ["AEFT", "PPRO"],
+      asset: slug + ".mogrt",
+      assetName: slug + ".mogrt",
+      buffer: buffer,
+      notes: plan.note,
+      author: "QuickKit"
+    });
+
+    if (result && result.ok) libRefresh();
+    return result || { ok: false, error: "The .mogrt was not saved into the library." };
+  }
+
+  function textMogrtManual(data, plan) {
+    state.textMogrtPending = { data: data, plan: plan };
+    if (els.textMogrt) els.textMogrt.textContent = "Finish MOGRT export";
+    textSetProgress("");
+    showMessage(
+      "error",
+      "After Effects kept the template comp \"" + data.comp + "\" open in Essential Graphics. Press Export Motion Graphics Template there and save it to " +
+        data.dir + " then press Finish MOGRT export. The save prompt on the next try: choose Don't Save."
+    );
+    setStatus("MOGRT export needs one manual step");
+  }
+
+  function textMogrtClick() {
+    if (state.textMogrtPending) {
+      textMogrtFinish();
+      return;
+    }
+    if (state.textMogrtJob && state.textMogrtJob.active) return;
+
+    var plan = textBuildPlan();
+    if (!plan) {
+      showMessage("error", "Turn on Animate in, Animate out, or both.");
+      return;
+    }
+
+    textMogrtSetBusy(true);
+    textSetProgress("Building and exporting \"" + plan.name + "\u2026");
+    setStatus("Exporting MOGRT\u2026");
+
+    textMogrtExport(plan, function (data) {
+      textMogrtSetBusy(false);
+      textSetProgress("");
+
+      if (data && data.manual) {
+        textMogrtManual(data, plan);
+        return;
+      }
+      if (!data || !data.ok) {
+        showMessage("error", (data && data.error) || "The MOGRT was not exported.");
+        setStatus("MOGRT export failed");
+        return;
+      }
+
+      var saved = textMogrtSaveFile(data, plan);
+      if (!saved.ok) {
+        showMessage("error", saved.error || "The .mogrt was exported but not saved into the library.");
+        setStatus("MOGRT exported, not saved");
+        return;
+      }
+
+      showMessage(
+        "ok",
+        saved.skipped
+          ? "\"" + plan.name + "\" is already in the library as a MOGRT."
+          : "Exported \"" + plan.name + "\" and saved it in the library as a MOGRT."
+      );
+      setStatus("MOGRT saved in the library");
+    });
+  }
+
+  function textMogrtFinish() {
+    var pending = state.textMogrtPending;
+    if (!pending) return;
+
+    var fs = textNodeModule("fs");
+    if (!fs || !pending.data.file || !fs.existsSync(pending.data.file)) {
+      showMessage("error", "After Effects has not written " + pending.data.file + " yet. Export it from Essential Graphics, then press Finish MOGRT export again.");
+      return;
+    }
+
+    var saved = textMogrtSaveFile(pending.data, pending.plan);
+    if (!saved.ok) {
+      showMessage("error", saved.error || "The .mogrt could not be saved into the library.");
+      return;
+    }
+
+    state.textMogrtPending = null;
+    if (els.textMogrt) els.textMogrt.textContent = "Export MOGRT";
+    showMessage("ok", "Saved \"" + pending.plan.name + "\" into the library as a MOGRT.");
+    setStatus("MOGRT saved in the library");
+  }
+
+  function textMogrtExportAll() {
+    if (state.textMogrtJob && state.textMogrtJob.active) return;
+    if (state.textMogrtPending) {
+      showMessage("error", "Finish the MOGRT that is waiting in Essential Graphics first.");
+      return;
+    }
+
+    var engine = textEngine();
+    if (!engine) return;
+    if (libCurrentHost() !== "AEFT") {
+      showMessage("error", "MOGRTs are built in After Effects. Open the panel there to export.");
+      return;
+    }
+
+    var queue = [];
+    for (var i = 0; i < engine.PRESETS.length; i++) queue.push(engine.PRESETS[i].id);
+
+    state.textMogrtJob = {
+      active: true,
+      cancel: false,
+      queue: queue,
+      done: 0,
+      total: queue.length,
+      added: 0,
+      failed: 0
+    };
+    textMogrtSetBusy(true);
+    textSetProgress("Starting 0 of " + queue.length + "\u2026");
+    textMogrtNext();
+  }
+
+  function textMogrtNext() {
+    var job = state.textMogrtJob;
+    if (!job || !job.active) return;
+    var engine = textEngine();
+
+    if (job.cancel) {
+      textMogrtEnd();
+      return;
+    }
+    if (!job.queue.length) {
+      textMogrtEnd();
+      return;
+    }
+
+    var id = job.queue.shift();
+    var plan = engine.plan(id, null);
+    if (!plan) {
+      job.done++;
+      job.failed++;
+      textMogrtNext();
+      return;
+    }
+
+    textSetProgress(
+      "MOGRT " + (job.done + 1) + " of " + job.total + " \u2014 " + plan.name
+    );
+
+    textMogrtExport(plan, function (data) {
+      if (!state.textMogrtJob || !state.textMogrtJob.active) return;
+      job.done++;
+
+      if (data && data.manual) {
+        textMogrtManual(data, plan);
+        job.cancel = true;
+        textMogrtEnd();
+        return;
+      }
+      if (!data || !data.ok) {
+        job.failed++;
+        textMogrtNext();
+        return;
+      }
+
+      var saved = textMogrtSaveFile(data, plan);
+      if (!saved.ok) job.failed++;
+      else job.added++;
+      textMogrtNext();
+    });
+  }
+
+  function textMogrtCancel() {
+    var job = state.textMogrtJob;
+    if (!job || !job.active) return;
+    job.cancel = true;
+    textSetProgress("Stopping after this preset\u2026");
+    setStatus("Stopping MOGRT export");
+  }
+
+  function textMogrtEnd() {
+    var job = state.textMogrtJob;
+    var added = job ? job.added : 0;
+    var failed = job ? job.failed : 0;
+    var total = job ? job.total : 0;
+    state.textMogrtJob = null;
+    textMogrtSetBusy(false);
+    textSetProgress("");
+    libRefresh();
+    showMessage(
+      failed ? "error" : "ok",
+      "MOGRT export finished: " + added + " added, " + failed + " failed, " + total + " tried."
+    );
+    setStatus("MOGRT export finished");
+  }
+
+  /* ---------- seeding + previews (Part 6C) ---------- */
+
+  function textSeedLibrary() {
+    var engine = textEngine();
+    if (!engine) return 0;
+    var api = libApiGet();
+    if (!api || !api.itemAdd) return 0;
+
+    var key = "qk.textpresets.seeded";
+    var want = engine.VERSION + ":" + engine.PRESETS.length;
+    if (libStore(key) === want) return 0;
+
+    var added = 0;
+    for (var i = 0; i < engine.PRESETS.length; i++) {
+      var def = engine.PRESETS[i];
+      var plan = engine.plan(def.id, null);
+      if (!plan) continue;
+      var text = JSON.stringify({
+        format: "quickkit-text-preset",
+        version: engine.VERSION,
+        id: def.id,
+        plan: plan
+      });
+      var result = api.itemAdd({
+        id: "qk-text-" + def.id,
+        type: "ae-preset",
+        name: def.name,
+        category: "Text / " + def.category,
+        tags: ["text", "text-preset", engine.slug(def.category)],
+        hostSupport: ["AEFT"],
+        asset: def.id + ".qktextpreset",
+        assetName: def.name + ".qktextpreset",
+        text: text,
+        notes: def.note,
+        author: "QuickKit"
+      });
+      if (result && result.ok) added++;
+    }
+
+    libStore(key, want);
+    state.textSeeded = added;
+    libRefresh();
+    return added;
+  }
+
+  function textOnShow() {
+    var added = textSeedLibrary();
+    if (!added) return;
+    if (libCurrentHost() !== "AEFT") return;
+    setStatus("Added " + added + " text presets to the library; generating previews");
+
+    /* Part 6B batch: renders each new item through the same preview pipeline
+       and can be cancelled from the preview pane or the Text tab. */
+    window.setTimeout(function () {
+      libGenerateMissing();
+    }, 400);
   }
 
   /* ---------- presets ---------- */
@@ -5483,6 +6060,7 @@
     if (!item || item.type !== "ae-preset") return "";
     var asset = String(item.asset || "").toLowerCase();
     if (/\.qkpreset$/.test(asset)) return "qkpreset";
+    if (/\.qktextpreset$/.test(asset)) return "qktextpreset";
     if (/\.ffx$/.test(asset)) return "ffx";
     return "";
   }
