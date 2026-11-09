@@ -279,3 +279,7 @@ QuickKit/
 
 [MIT](LICENSE) © 34rns. Bundled Inter is under the SIL Open Font License 1.1 —
 see `docs/ASSET_LICENSES.md`.
+
+## Support
+
+[Buy me a coffee](https://www.supportkori.com/rnsofficial)
