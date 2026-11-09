@@ -1885,6 +1885,108 @@
   font-size: var(--qk-fs-11);
 }
 
+/* Part 6D: targeting, MOGRT controls and the bin organizer. */
+.qk-lib-preview__target,
+.qk-lib-preview__mogrt {
+  display: grid;
+  gap: var(--qk-space-2);
+  padding-top: var(--qk-space-2);
+  border-top: var(--qk-border-width) solid var(--qk-border);
+}
+
+.qk-lib-preview__target-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  align-items: center;
+  gap: var(--qk-space-2);
+}
+
+.qk-lib-preview__target-label {
+  color: var(--qk-muted);
+  font-size: var(--qk-fs-11);
+}
+
+.qk-lib-preview__mogrt-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--qk-space-2);
+}
+
+.qk-lib-preview__mogrt-title {
+  color: var(--qk-muted);
+  font-size: var(--qk-fs-11);
+}
+
+.qk-lib-preview__mogrt-text {
+  width: 100%;
+  min-height: calc(var(--qk-space-8) * 2);
+  resize: vertical;
+  font-family: var(--qk-font-mono);
+  font-size: var(--qk-fs-11);
+}
+
+.qk-lib-preview__mogrt-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  align-items: center;
+  gap: var(--qk-space-2);
+}
+
+.qk-lib-preview__mogrt-label {
+  color: var(--qk-muted);
+  font-size: var(--qk-fs-11);
+}
+
+.qk-lib-preview__mogrt-other {
+  color: var(--qk-muted);
+  font-size: var(--qk-fs-11);
+  font-family: var(--qk-font-mono);
+}
+
+.qk-lib-bins {
+  display: grid;
+  gap: var(--qk-space-2);
+  padding: var(--qk-space-3);
+  border: var(--qk-border-width) solid var(--qk-border);
+  border-radius: var(--qk-radius-md);
+  background: var(--qk-surface);
+}
+
+.qk-lib-bins__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--qk-space-2);
+}
+
+.qk-lib-bins__title {
+  font-size: var(--qk-fs-12);
+  font-weight: var(--qk-fw-semibold);
+}
+
+.qk-lib-bins__host,
+.qk-lib-bins__note {
+  color: var(--qk-muted);
+  font-size: var(--qk-fs-11);
+}
+
+.qk-lib-bins__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--qk-space-2);
+}
+
+.qk-lib-bins__row .qk-field {
+  flex: 1 1 calc(var(--qk-space-8) * 2);
+}
+
+.qk-lib-preview[data-state="empty"] .qk-lib-preview__target,
+.qk-lib-preview[data-state="empty"] .qk-lib-preview__mogrt {
+  display: none;
+}
+
 .qk-lib-preview__resize {
   height: var(--qk-lib-preview-resize-h);
   cursor: ns-resize;

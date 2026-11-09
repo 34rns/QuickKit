@@ -4,7 +4,7 @@
 (function (window, document) {
   "use strict";
 
-  var VERSION = "0.9.0";
+  var VERSION = "0.10.0";
   var WELCOME_KEY = "qk.welcome.v1";
   var HOST_TEST_TIMEOUT = 8000;
   var ACTION_TIMEOUT = 15000;
@@ -324,9 +324,21 @@
     els.libPreviewFav = document.getElementById("qk-lib-preview-fav");
     els.libPreviewNote = document.getElementById("qk-lib-preview-note");
     els.libPreviewParams = document.getElementById("qk-lib-preview-params");
+    els.libPreviewTarget = document.getElementById("qk-lib-preview-target");
+    els.libPreviewMogrt = document.getElementById("qk-lib-preview-mogrt");
     els.libPreviewRegen = document.getElementById("qk-lib-preview-regen");
     els.libPreviewRegenBtn = document.getElementById("qk-lib-preview-regen-btn");
     els.libPreviewResize = document.getElementById("qk-lib-preview-resize");
+    els.libBins = document.getElementById("qk-lib-bins");
+    els.libBinsCreate = document.getElementById("qk-lib-bins-create");
+    els.libBinsSort = document.getElementById("qk-lib-bins-sort");
+    els.libBinsRename = document.getElementById("qk-lib-bins-rename");
+    els.libBinsMode = document.getElementById("qk-lib-bins-mode");
+    els.libBinsFind = document.getElementById("qk-lib-bins-find");
+    els.libBinsReplace = document.getElementById("qk-lib-bins-replace");
+    els.libBinsPrefix = document.getElementById("qk-lib-bins-prefix");
+    els.libBinsSuffix = document.getElementById("qk-lib-bins-suffix");
+    els.libBinsNote = document.getElementById("qk-lib-bins-note");
 
     els.panels = {
       anchor: document.getElementById("qk-panel-anchor"),
@@ -4380,6 +4392,7 @@
   }
 
   function libOnShow() {
+    recipeSeedLibrary();
     if (!lib.loaded && !lib.loading) libRefresh();
     else renderLibrary();
   }
@@ -4550,6 +4563,7 @@
   function renderLibrary() {
     if (!els.libItems || !els.libCollections) return;
     var core = libCore();
+    libBinsVisible();
 
     els.libPath.textContent = lib.root
       ? "Stored locally in " + lib.root
@@ -4861,6 +4875,102 @@
       var focusCard = els.libItems.querySelector('[data-id="' + lib.focusId + '"]');
       if (focusCard) focusCard.setAttribute("tabindex", "0");
     }
+  }
+
+  /* Part 6D: the 18 built-in Premiere recipes live in the shared library, so
+     both apps see them and Favorites/Recents stay in sync. */
+  function recipeSeedLibrary() {
+    var engine = prEngine();
+    if (!engine) return 0;
+    var api = libApiGet();
+    if (!api || !api.itemAdd) return 0;
+
+    var key = "qk.recipes.seeded";
+    var want = engine.VERSION + ":" + engine.RECIPES.length;
+    if (libStore(key) === want) return 0;
+
+    var added = 0;
+    for (var i = 0; i < engine.RECIPES.length; i++) {
+      var def = engine.RECIPES[i];
+      var plan = engine.defaultPlan(def.id);
+      if (!plan) continue;
+      var text = JSON.stringify({
+        format: "quickkit-pr-recipe",
+        version: engine.VERSION,
+        id: def.id,
+        plan: plan
+      });
+      var tag = String(def.category || "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+      var result = api.itemAdd({
+        id: "qk-recipe-" + def.id,
+        type: "pr-recipe",
+        name: def.name,
+        category: "Recipe / " + def.category,
+        tags: ["recipe", "premiere", tag],
+        hostSupport: ["PPRO"],
+        asset: def.id + ".qkrecipe.json",
+        assetName: def.name + ".qkrecipe.json",
+        text: text,
+        notes: def.note,
+        author: "QuickKit"
+      });
+      if (result && result.ok) added++;
+    }
+
+    libStore(key, want);
+    if (added) {
+      libRefresh();
+      setStatus("Added " + libPlural(added, "Premiere recipe", "Premiere recipes") + " to the library");
+    }
+    return added;
+  }
+
+  /* Part 6D: optional bin organizer. Premiere only, so the section is hidden
+     everywhere else instead of failing on a click. */
+  function libBinsVisible() {
+    if (!els.libBins) return;
+    els.libBins.hidden = libCurrentHost() !== "PPRO";
+  }
+
+  function libBinsNote(text) {
+    if (!els.libBinsNote) return;
+    els.libBinsNote.textContent = text || "";
+    els.libBinsNote.hidden = !text;
+  }
+
+  function libBinsValue(el) {
+    return el ? String(el.value || "") : "";
+  }
+
+  function libBinsRun(action) {
+    var payload = { action: action };
+    if (action === "rename") {
+      payload.mode = libBinsValue(els.libBinsMode) || "replace";
+      payload.find = libBinsValue(els.libBinsFind);
+      payload.replace = libBinsValue(els.libBinsReplace);
+      payload.prefix = libBinsValue(els.libBinsPrefix);
+      payload.suffix = libBinsValue(els.libBinsSuffix);
+      payload.start = 1;
+      payload.padding = 2;
+    }
+    libBinsNote("");
+    setStatus(
+      action === "create"
+        ? "Creating the standard bins\u2026"
+        : action === "sort"
+        ? "Sorting the Project-panel selection\u2026"
+        : "Renaming the Project-panel selection\u2026"
+    );
+    bridgeCall("qkPrBins(" + qkQuote(JSON.stringify(payload)) + ")", function (data) {
+      if (!data || !data.ok) {
+        showMessage("error", (data && data.error) || "Nothing changed.");
+        setStatus("Nothing changed");
+        return;
+      }
+      showMessage("ok", data.message || "Done.");
+      setStatus(data.message || "Done");
+      libBinsNote(data.message || "");
+    });
   }
 
   function libCard(item) {
@@ -5721,6 +5831,22 @@
     if (els.libImport) els.libImport.addEventListener("click", libImportPack);
     if (els.libRepair) els.libRepair.addEventListener("click", libRepairLibrary);
 
+    if (els.libBinsCreate) {
+      els.libBinsCreate.addEventListener("click", function () {
+        libBinsRun("create");
+      });
+    }
+    if (els.libBinsSort) {
+      els.libBinsSort.addEventListener("click", function () {
+        libBinsRun("sort");
+      });
+    }
+    if (els.libBinsRename) {
+      els.libBinsRename.addEventListener("click", function () {
+        libBinsRun("rename");
+      });
+    }
+
     if (els.libViewGrid) {
       els.libViewGrid.addEventListener("click", function () {
         lib.view = "grid";
@@ -6008,7 +6134,14 @@
     nodeModuleError: "",
     ffmpeg: "",
     ffmpegError: "",
-    gen: null
+    gen: null,
+    /* Part 6D: Premiere targeting and MOGRT state. */
+    target: "selected",
+    trackIndex: -1,
+    context: null,
+    contextPending: false,
+    contextError: "",
+    mogrt: null
   };
 
   function previewCore() {
@@ -6057,8 +6190,11 @@
   }
 
   function previewAssetKind(item) {
-    if (!item || item.type !== "ae-preset") return "";
+    if (!item) return "";
     var asset = String(item.asset || "").toLowerCase();
+    if (item.type === "mogrt") return /\.mogrt$/.test(asset) ? "mogrt" : "";
+    if (item.type === "pr-recipe") return /\.qkrecipe\.json$/.test(asset) ? "qkrecipe" : "";
+    if (item.type !== "ae-preset") return "";
     if (/\.qkpreset$/.test(asset)) return "qkpreset";
     if (/\.qktextpreset$/.test(asset)) return "qktextpreset";
     if (/\.ffx$/.test(asset)) return "ffx";
@@ -6066,12 +6202,385 @@
   }
 
   function previewCanGenerate(item) {
-    return !!item && libCurrentHost() === "AEFT" && previewAssetKind(item) !== "" && !libIsMissing(item.id);
+    return (
+      !!item &&
+      item.type === "ae-preset" &&
+      libCurrentHost() === "AEFT" &&
+      previewAssetKind(item) !== "" &&
+      !libIsMissing(item.id)
+    );
   }
 
   function previewCanApply(item) {
     if (!item || libIsMissing(item.id) || !libWorksHere(item)) return false;
+    var host = libCurrentHost();
+    if (item.type === "pr-recipe") return host === "PPRO" && !!recipeForItem(item);
+    if (item.type === "mogrt") return host === "PPRO" && previewAssetKind(item) === "mogrt";
     return previewAssetKind(item) !== "";
+  }
+
+  /* ------------------------------------------------- Part 6D: Premiere */
+
+  function prEngine() {
+    return window.QKRecipes || null;
+  }
+
+  function recipeIdFor(item) {
+    if (!item || item.type !== "pr-recipe") return "";
+    var asset = String(item.asset || "").replace(/\\/g, "/");
+    var name = asset.substring(asset.lastIndexOf("/") + 1);
+    if (/\.qkrecipe\.json$/i.test(name)) return name.replace(/\.qkrecipe\.json$/i, "");
+    return String(item.id || "").replace(/^qk-recipe-/, "");
+  }
+
+  function recipeForItem(item) {
+    var engine = prEngine();
+    if (!engine) return null;
+    return engine.byId(recipeIdFor(item));
+  }
+
+  function recipeParamDefs(item) {
+    var engine = prEngine();
+    var recipe = recipeForItem(item);
+    if (!engine || !recipe) return [];
+    var out = [];
+    for (var i = 0; i < engine.PARAM_ORDER.length; i++) {
+      var key = engine.PARAM_ORDER[i];
+      if (recipe.params.indexOf(key) < 0) continue;
+      if (engine.PARAMS[key]) out.push(engine.PARAMS[key]);
+    }
+    return out;
+  }
+
+  function previewPrDefs(item) {
+    if (!item) return [];
+    if (item.type === "pr-recipe") return recipeParamDefs(item);
+    return [];
+  }
+
+  function prContextRefresh() {
+    if (libCurrentHost() !== "PPRO") return;
+    if (preview.contextPending) return;
+    preview.contextPending = true;
+    preview.contextError = "";
+    bridgeCall("qkPrContext()", function (data) {
+      preview.contextPending = false;
+      if (data && data.ok) {
+        preview.context = data;
+        if (preview.trackIndex < 0) preview.trackIndex = previewDefaultTrack();
+      } else {
+        preview.context = null;
+        preview.contextError = (data && data.error) || "Premiere did not return the sequence.";
+      }
+      renderPreview();
+    });
+  }
+
+  function previewTrackList() {
+    if (!preview.context || !preview.context.tracks) return [];
+    return preview.context.tracks;
+  }
+
+  function previewDefaultTrack() {
+    var tracks = previewTrackList();
+    var pick = -1;
+    for (var i = 0; i < tracks.length; i++) {
+      if (!tracks[i].locked) pick = tracks[i].index;
+    }
+    if (pick < 0 && tracks.length) pick = tracks[tracks.length - 1].index;
+    return pick;
+  }
+
+  function previewTrackName(index) {
+    var tracks = previewTrackList();
+    for (var i = 0; i < tracks.length; i++) {
+      if (tracks[i].index === index) return tracks[i].name + (tracks[i].locked ? " (locked)" : "");
+    }
+    return "V" + (index + 1);
+  }
+
+  function previewTrackSelect(id, label, value, onChange) {
+    var row = libEl("div", "qk-lib-preview__target-row");
+    row.appendChild(libEl("span", "qk-lib-preview__target-label", label));
+    var select = document.createElement("select");
+    select.className = "qk-select";
+    select.id = id;
+    select.setAttribute("aria-label", label);
+    var tracks = previewTrackList();
+    if (!tracks.length) {
+      var empty = libEl("option", "", "No sequence read yet");
+      empty.value = "-1";
+      select.appendChild(empty);
+      select.disabled = true;
+    }
+    for (var i = 0; i < tracks.length; i++) {
+      var track = tracks[i];
+      var option = libEl("option", "", track.name + (track.locked ? " (locked)" : ""));
+      option.value = String(track.index);
+      if (track.index === value) option.selected = true;
+      select.appendChild(option);
+    }
+    select.addEventListener("change", function () {
+      onChange(Number(select.value));
+    });
+    row.appendChild(select);
+    return row;
+  }
+
+  function renderPreviewTarget(item) {
+    if (!els.libPreviewTarget) return;
+    libClear(els.libPreviewTarget);
+    var host = libCurrentHost();
+    var isRecipe = !!item && item.type === "pr-recipe";
+    var isMogrt = !!item && item.type === "mogrt";
+    var wants = host === "PPRO" && (isRecipe || isMogrt);
+    els.libPreviewTarget.hidden = !wants;
+    if (!wants) return;
+
+    if (!preview.context && !preview.contextPending && !preview.contextError) prContextRefresh();
+
+    if (isRecipe) {
+      var modeRow = libEl("div", "qk-lib-preview__target-row");
+      modeRow.appendChild(libEl("span", "qk-lib-preview__target-label", "Target"));
+      var mode = document.createElement("select");
+      mode.className = "qk-select";
+      mode.id = "qk-lib-target-mode";
+      mode.setAttribute("aria-label", "What the recipe applies to");
+      var modes = [
+        { value: "selected", label: "Selected clips" },
+        { value: "playhead", label: "Clip under playhead" }
+      ];
+      for (var m = 0; m < modes.length; m++) {
+        var opt = libEl("option", "", modes[m].label);
+        opt.value = modes[m].value;
+        if (preview.target === modes[m].value) opt.selected = true;
+        mode.appendChild(opt);
+      }
+      mode.addEventListener("change", function () {
+        preview.target = mode.value === "playhead" ? "playhead" : "selected";
+        renderPreviewTarget(item);
+      });
+      modeRow.appendChild(mode);
+      els.libPreviewTarget.appendChild(modeRow);
+    }
+
+    if (preview.trackIndex < 0) preview.trackIndex = previewDefaultTrack();
+
+    if (isMogrt || preview.target === "playhead") {
+      els.libPreviewTarget.appendChild(
+        previewTrackSelect(
+          isMogrt ? "qk-lib-target-track" : "qk-lib-target-search-track",
+          isMogrt ? "Video track" : "Search from",
+          preview.trackIndex,
+          function (value) {
+            preview.trackIndex = value;
+            renderPreviewTarget(item);
+          }
+        )
+      );
+    }
+
+    var refreshRow = libEl("div", "qk-lib-preview__target-row");
+    var refresh = libEl("button", "qk-btn qk-btn--ghost qk-btn--xs", "Refresh sequence");
+    refresh.type = "button";
+    refresh.setAttribute("data-tip", "Re-read the sequence, playhead and track list from Premiere Pro");
+    refresh.addEventListener("click", function () {
+      preview.contextError = "";
+      prContextRefresh();
+    });
+    refreshRow.appendChild(refresh);
+    var status = preview.context
+      ? preview.context.sequence + " \u00b7 " + previewTrackName(preview.trackIndex)
+      : preview.contextError || "Reading the sequence\u2026";
+    refreshRow.appendChild(libEl("span", "qk-lib-preview__target-label", status));
+    els.libPreviewTarget.appendChild(refreshRow);
+  }
+
+  function mogrtRefresh() {
+    if (!preview.mogrt) return;
+    var payload = { nodeId: preview.mogrt.nodeId };
+    bridgeCall("qkPrMogrtParams(" + qkQuote(JSON.stringify(payload)) + ")", function (data) {
+      if (!data || !data.ok) {
+        showMessage("error", (data && data.error) || "The template controls could not be read.");
+        preview.mogrt = null;
+        renderPreview();
+        return;
+      }
+      preview.mogrt = { nodeId: data.nodeId, name: data.name, params: data.params || [] };
+      renderPreview();
+    });
+  }
+
+  function mogrtSetText(index, text) {
+    if (!preview.mogrt) return;
+    var payload = { nodeId: preview.mogrt.nodeId, index: index, text: text };
+    bridgeCall("qkPrMogrtSetText(" + qkQuote(JSON.stringify(payload)) + ")", function (data) {
+      if (!data || !data.ok) {
+        showMessage("error", (data && data.error) || "The text was not changed.");
+        return;
+      }
+      showMessage("ok", data.message || "Text updated.");
+      setStatus(data.message || "Text updated");
+      mogrtRefresh();
+    });
+  }
+
+  function mogrtSetParam(index, kind, value) {
+    if (!preview.mogrt) return;
+    var payload = { nodeId: preview.mogrt.nodeId, index: index, kind: kind, value: value };
+    bridgeCall("qkPrMogrtSetParam(" + qkQuote(JSON.stringify(payload)) + ")", function (data) {
+      if (!data || !data.ok) {
+        showMessage("error", (data && data.error) || "The control was not changed.");
+        return;
+      }
+      showMessage("ok", data.message || "Control updated.");
+      setStatus(data.message || "Control updated");
+    });
+  }
+
+  function renderPreviewMogrt(item) {
+    if (!els.libPreviewMogrt) return;
+    libClear(els.libPreviewMogrt);
+    var show = libCurrentHost() === "PPRO" && !!item && item.type === "mogrt" && !!preview.mogrt;
+    els.libPreviewMogrt.hidden = !show;
+    if (!show) return;
+
+    var head = libEl("div", "qk-lib-preview__mogrt-head");
+    head.appendChild(libEl("span", "qk-lib-preview__mogrt-title", "Controls on \"" + preview.mogrt.name + "\""));
+    var refresh = libEl("button", "qk-btn qk-btn--ghost qk-btn--xs", "Refresh");
+    refresh.type = "button";
+    refresh.setAttribute("data-tip", "Read the template's controls again");
+    refresh.addEventListener("click", mogrtRefresh);
+    head.appendChild(refresh);
+    els.libPreviewMogrt.appendChild(head);
+
+    var params = preview.mogrt.params || [];
+    if (!params.length) {
+      els.libPreviewMogrt.appendChild(
+        libEl("p", "qk-lib-preview__mogrt-other", "This template exposes no editable controls.")
+      );
+      return;
+    }
+
+    for (var i = 0; i < params.length; i++) {
+      (function (param) {
+        if (param.kind === "text") {
+          var textRow = libEl("div", "qk-lib-preview__mogrt-row");
+          textRow.style.gridTemplateColumns = "minmax(0, 1fr)";
+          var area = document.createElement("textarea");
+          area.className = "qk-input qk-lib-preview__mogrt-text";
+          area.value = param.text || "";
+          area.setAttribute("aria-label", param.name);
+          area.setAttribute("data-tip", "Type the new text, then press Update text");
+          var update = libEl("button", "qk-btn qk-btn--secondary qk-btn--xs", "Update text");
+          update.type = "button";
+          update.setAttribute("data-tip", "Write this text into \"" + param.name + "\"");
+          update.addEventListener("click", function () {
+            mogrtSetText(param.index, area.value);
+          });
+          textRow.appendChild(area);
+          textRow.appendChild(update);
+          els.libPreviewMogrt.appendChild(textRow);
+          return;
+        }
+
+        var row = libEl("div", "qk-lib-preview__mogrt-row");
+        row.appendChild(libEl("span", "qk-lib-preview__mogrt-label", param.name));
+        if (param.kind === "number") {
+          var input = document.createElement("input");
+          input.type = "number";
+          input.className = "qk-input";
+          input.step = "any";
+          input.value = String(param.value === null || param.value === undefined ? 0 : param.value);
+          input.setAttribute("aria-label", param.name);
+          input.addEventListener("change", function () {
+            mogrtSetParam(param.index, "number", Number(input.value));
+          });
+          row.appendChild(input);
+        } else if (param.kind === "checkbox") {
+          var box = document.createElement("input");
+          box.type = "checkbox";
+          box.checked = param.checked === true;
+          box.setAttribute("aria-label", param.name);
+          box.addEventListener("change", function () {
+            mogrtSetParam(param.index, "checkbox", box.checked);
+          });
+          row.appendChild(box);
+        } else {
+          row.appendChild(libEl("span", "qk-lib-preview__mogrt-other", "Not editable from a script"));
+        }
+        els.libPreviewMogrt.appendChild(row);
+      })(params[i]);
+    }
+  }
+
+  function prApplyRecipe(item) {
+    var engine = prEngine();
+    var recipe = recipeForItem(item);
+    if (!engine || !recipe) {
+      showMessage("error", "This recipe cannot be read. Re-import it or pick another recipe.");
+      return;
+    }
+    var plan = engine.plan(recipe, preview.params);
+    if (!plan) {
+      showMessage("error", "This recipe has no keyframes.");
+      return;
+    }
+    var payload = {
+      plan: plan,
+      target: preview.target === "playhead" ? "playhead" : "selected",
+      trackIndex: preview.trackIndex
+    };
+    setStatus("Applying \"" + item.name + "\u2026");
+    bridgeCall("qkPrRecipeApply(" + qkQuote(JSON.stringify(payload)) + ")", function (data) {
+      if (!data || !data.ok) {
+        showMessage("error", (data && data.error) || "Nothing was applied.");
+        setStatus("Nothing applied");
+        return;
+      }
+      showMessage("ok", data.message || "Applied.");
+      setStatus(data.message || "Applied");
+      var api = libApiGet();
+      if (api && api.touch) {
+        try {
+          api.touch(item.id);
+        } catch (eTouch) {}
+      }
+      libRefresh();
+      renderPreview();
+    });
+  }
+
+  function prApplyMogrt(item) {
+    var api = libApiGet();
+    if (!api) return;
+    var payload = { path: api.itemAssetPath(item.id), trackIndex: preview.trackIndex };
+    setStatus("Inserting \"" + item.name + "\u2026");
+    bridgeCall("qkPrMogrtInsert(" + qkQuote(JSON.stringify(payload)) + ")", function (data) {
+      if (!data || !data.ok) {
+        showMessage("error", (data && data.error) || "Nothing was inserted.");
+        setStatus("Nothing inserted");
+        return;
+      }
+      preview.mogrt = { nodeId: data.nodeId, name: data.name, params: data.params || [] };
+      showMessage("ok", data.message || "Inserted.");
+      setStatus(data.message || "Inserted");
+      if (api.touch) {
+        try {
+          api.touch(item.id);
+        } catch (eTouch) {}
+      }
+      libRefresh();
+      renderPreview();
+      if (els.libPreviewMogrt) {
+        var area = els.libPreviewMogrt.querySelector("textarea");
+        if (area) {
+          try {
+            area.focus();
+          } catch (eFocus) {}
+        }
+      }
+    });
   }
 
   function previewApprox(item) {
@@ -6301,6 +6810,7 @@
     previewReleaseVideo();
     preview.id = nextId;
     preview.params = item ? previewCopyParams(item.params) : {};
+    preview.mogrt = null;
     preview.time = 0;
     preview.playing = true;
     preview.kind = "none";
@@ -6494,20 +7004,23 @@
 
     if (els.libPreviewApply) {
       var host = libCurrentHost();
-      if (host === "PPRO") {
-        els.libPreviewApply.textContent = "Coming in 6D";
-        els.libPreviewApply.disabled = true;
-        els.libPreviewApply.setAttribute("data-tip", "Applying library items in Premiere Pro is part 6D. Previews still play here.");
-      } else {
-        els.libPreviewApply.textContent = "Apply";
-        els.libPreviewApply.disabled = !previewCanApply(item);
-        els.libPreviewApply.setAttribute(
-          "data-tip",
-          item && item.type === "pack"
-            ? "A pack is a bundle of items. Open its menu to unpack it."
-            : "Apply to the current selection (Enter or double-click)"
-        );
+      var canApply = previewCanApply(item);
+      var label = "Apply";
+      var tip = "Apply to the current selection (Enter or double-click)";
+      if (item && item.type === "pr-recipe") {
+        label = "Apply recipe";
+        tip = "Keyframe the selected clips, or the clip under the playhead";
+      } else if (item && item.type === "mogrt") {
+        label = "Insert at playhead";
+        tip = "Import the MOGRT on the chosen video track at the playhead";
+      } else if (item && item.type === "pack") {
+        tip = "A pack is a bundle of items. Open its menu to unpack it.";
+      } else if (host === "PPRO") {
+        tip = "This item works in After Effects only. It stays in the library for that app.";
       }
+      els.libPreviewApply.textContent = label;
+      els.libPreviewApply.disabled = !canApply;
+      els.libPreviewApply.setAttribute("data-tip", tip);
     }
 
     if (els.libPreviewFav) {
@@ -6525,6 +7038,8 @@
     }
 
     renderPreviewParams(item);
+    renderPreviewTarget(item);
+    renderPreviewMogrt(item);
     renderPreviewRegen(item, state);
     previewUpdateTransport();
   }
@@ -6547,7 +7062,10 @@
       els.libPreviewParams.hidden = true;
       return;
     }
-    var defs = core.paramDefs(item.type);
+    var defs = previewPrDefs(item);
+    if (!defs.length && item.type !== "pr-recipe" && item.type !== "mogrt") {
+      defs = core.paramDefs(item.type);
+    }
     els.libPreviewParams.hidden = defs.length === 0;
     if (!defs.length) return;
 
@@ -7040,10 +7558,6 @@
       showMessage("error", "Select an item first.");
       return;
     }
-    if (libCurrentHost() === "PPRO") {
-      showMessage("error", "Applying library items in Premiere Pro arrives in part 6D. The previews work already.");
-      return;
-    }
     if (libIsMissing(item.id)) {
       showMessage("error", "\"" + item.name + "\" is missing its file on disk. Repair the library or import the pack again.");
       return;
@@ -7053,9 +7567,22 @@
         "error",
         item.type === "pack"
           ? "A pack is a bundle of items, not something to apply. Unpack it from the item menu."
+          : libCurrentHost() === "PPRO"
+          ? "\"" + item.name + "\" cannot be applied in Premiere Pro. After Effects presets stay in the library for After Effects."
           : "\"" + item.name + "\" cannot be applied in this app."
       );
       return;
+    }
+
+    if (libCurrentHost() === "PPRO") {
+      if (item.type === "pr-recipe") {
+        prApplyRecipe(item);
+        return;
+      }
+      if (item.type === "mogrt") {
+        prApplyMogrt(item);
+        return;
+      }
     }
 
     var api = libApiGet();

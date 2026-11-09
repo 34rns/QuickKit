@@ -2024,6 +2024,16 @@ function createPremiereWorld(options) {
   var nodeCounter = 0;
   var fs = opts.fs || new MockFileSystem();
 
+  function TimeCtor(seconds) {
+    var time = {
+      seconds: typeof seconds === "number" ? seconds : 0,
+      get ticks() {
+        return String(Math.round(this.seconds * 254016000000));
+      }
+    };
+    return time;
+  }
+
   var world = {
     undo: undo,
     audioTracks: [],
@@ -2034,8 +2044,88 @@ function createPremiereWorld(options) {
     qeEnabled: false,
     markers: [],
     imported: [],
-    placed: []
+    placed: [],
+    playhead: 0,
+    mgt: [],
+    insertedMgt: [],
+    projectSelection: [],
+    moved: [],
+    bins: []
   };
+
+  function makeKeyParam(name, value, keyable) {
+    var param = {
+      displayName: name,
+      _value: value,
+      _keys: [],
+      _values: [],
+      _interp: [],
+      _timeVarying: false,
+      getValue: function () {
+        return param._value;
+      },
+      setValue: function (next) {
+        param._value = next;
+      },
+      areKeyframesSupported: function () {
+        return keyable !== false;
+      },
+      isTimeVarying: function () {
+        return param._timeVarying;
+      },
+      setTimeVarying: function (on) {
+        param._timeVarying = !!on;
+      },
+      addKey: function (time) {
+        param._keys.push(time);
+      },
+      getKeys: function () {
+        return param._keys.slice(0);
+      },
+      setValueAtKey: function (time, next) {
+        param._values.push({ time: time, value: next });
+      },
+      setInterpolationTypeAtKey: function (time, type) {
+        param._interp.push({ time: time, type: type });
+      }
+    };
+    return param;
+  }
+
+  function makeMotion() {
+    var position = makeKeyParam("Position", [960, 540]);
+    var scale = makeKeyParam("Scale", 100);
+    var rotation = makeKeyParam("Rotation", 0);
+    var anchor = makeKeyParam("Anchor Point", [960, 540]);
+    return {
+      displayName: "Motion",
+      matchName: "AE.ADBE Motion",
+      _params: { position: position, scale: scale, rotation: rotation, anchor: anchor },
+      properties: liveList([position, scale, rotation, anchor])
+    };
+  }
+
+  function makeOpacity() {
+    var opacity = makeKeyParam("Opacity", 100);
+    return {
+      displayName: "Opacity",
+      matchName: "AE.ADBE Opacity",
+      _params: { opacity: opacity },
+      properties: liveList([opacity])
+    };
+  }
+
+  function makeMogrtComponent() {
+    var text = makeKeyParam("Text", JSON.stringify({ textEditValue: "Title", fontTextRunLength: [5] }));
+    var size = makeKeyParam("Size", 72);
+    var bold = makeKeyParam("Bold", true);
+    return {
+      displayName: "Essential Graphics",
+      matchName: "AE.ADBE MOGRT",
+      properties: liveList([text, size, bold]),
+      _params: { text: text, size: size, bold: bold }
+    };
+  }
 
   function liveList(list) {
     return new Proxy(
@@ -2071,6 +2161,7 @@ function createPremiereWorld(options) {
       name: spec.name || "clip",
       start: spec.start,
       end: spec.end,
+      type: spec.type || (track && track._mediaType === "Audio" ? 2 : 1),
       inPoint: typeof spec.inPoint === "number" ? spec.inPoint : 0,
       speed: typeof spec.speed === "number" ? spec.speed : 1,
       nodeId: spec.nodeId || "node" + nodeCounter,
@@ -2084,6 +2175,13 @@ function createPremiereWorld(options) {
       _components: components,
       _path: spec.path || ""
     };
+
+    if (track && track._mediaType === "Video") {
+      clip._motion = makeMotion();
+      clip._opacity = makeOpacity();
+      components.push(clip._motion);
+      components.push(clip._opacity);
+    }
 
     clip.remove = function (ripple) {
       var list = track._clips;
@@ -2180,9 +2278,34 @@ function createPremiereWorld(options) {
   var sequence = {
     name: opts.name || "Silence test sequence",
     timebase: 10160640000, /* 254016000000 / 25 = 25 fps */
+    frameSizeHorizontal: opts.width || 1920,
+    frameSizeVertical: opts.height || 1080,
     markers: markers,
     getSelection: function () {
       return world.selection;
+    },
+    getPlayerPosition: function () {
+      return new TimeCtor(world.playhead);
+    },
+    importMGT: function (path, ticks, vidTrackOffset, audTrackOffset) {
+      world.mgt.push({
+        path: path,
+        ticks: ticks,
+        vidTrackOffset: vidTrackOffset,
+        audTrackOffset: audTrackOffset
+      });
+      if (opts.mogrtFails) return 0;
+      var track = world.videoTracks[vidTrackOffset];
+      if (!track) return 0;
+      var start = Number(ticks) / 254016000000;
+      var clip = addClip(track, { name: opts.mogrtName || "MOGRT title", path: path, start: start, end: start + 3 });
+      var component =
+        opts.mogrtComponent === undefined ? makeMogrtComponent() : opts.mogrtComponent;
+      clip.getMGTComponent = function () {
+        return component;
+      };
+      world.insertedMgt.push(clip);
+      return clip;
     }
   };
 
@@ -2194,7 +2317,25 @@ function createPremiereWorld(options) {
   var rootChildren = [];
   var rootItem = {
     name: "root",
-    children: liveList(rootChildren)
+    type: "ROOT",
+    children: liveList(rootChildren),
+    createBin: function (name) {
+      var bin = {
+        name: name,
+        type: "BIN",
+        _children: [],
+        children: null,
+        moveBin: function (target) {
+          var at = rootChildren.indexOf(bin);
+          if (at >= 0) rootChildren.splice(at, 1);
+          if (target && target._children) target._children.push(bin);
+        }
+      };
+      bin.children = liveList(bin._children);
+      rootChildren.push(bin);
+      world.bins.push(bin);
+      return bin;
+    }
   };
 
   var qeSequence = {
@@ -2246,6 +2387,9 @@ function createPremiereWorld(options) {
     enableQE: function () {
       world.qeEnabled = true;
     },
+    getCurrentProjectViewSelection: function () {
+      return world.projectSelection;
+    },
     beginUndoGroup: function (name) {
       undo.open++;
       undo.names.push(name);
@@ -2268,6 +2412,7 @@ function createPremiereWorld(options) {
   var sandbox = {
     app: app,
     qe: qe,
+    Time: TimeCtor,
     BridgeTalk: { appName: "premierepro" },
     File: opts.bridge ? FileCtor : function () {},
     Folder: opts.bridge ? FolderCtor : function () {},
@@ -2287,15 +2432,27 @@ function createPremiereWorld(options) {
   world.sequence = sequence;
 
   world.addAudioTrack = function (name) {
-    var track = { name: name, _clips: [] };
+    var track = { name: name, _clips: [], _mediaType: "Audio", locked: false };
     track.clips = liveList(track._clips);
+    track.isLocked = function () {
+      return track.locked;
+    };
+    track.setLocked = function (on) {
+      track.locked = !!on;
+    };
     world.audioTracks.push(track);
     return track;
   };
 
   world.addVideoTrack = function (name) {
-    var track = { name: name, _clips: [] };
+    var track = { name: name, _clips: [], _mediaType: "Video", locked: false };
     track.clips = liveList(track._clips);
+    track.isLocked = function () {
+      return track.locked;
+    };
+    track.setLocked = function (on) {
+      track.locked = !!on;
+    };
     track.overwriteClip = function (item, seconds) {
       world.placed.push({ item: item, at: seconds, track: name, mode: "overwrite" });
       return true;
@@ -3033,6 +3190,391 @@ test("bridge list reports handoffs and returns waiting", function () {
   assert.strictEqual(result.pending[0].clips, 1);
   assert.strictEqual(result.returns[0].comp, "My Sequence");
   assert.strictEqual(result.returns[0].renderExists, false);
+});
+
+/* ---------------- Part 6D: Premiere library ---------------- */
+
+function prPlan(channels, extra) {
+  var plan = {
+    version: 1,
+    id: "test-recipe",
+    name: "Test recipe",
+    easing: "smooth",
+    duration: 0.5,
+    channels: channels
+  };
+  var key;
+  for (key in extra || {}) {
+    if (extra.hasOwnProperty(key)) plan[key] = extra[key];
+  }
+  return plan;
+}
+
+function prItem(world, name, mediaPath, type) {
+  var item = {
+    name: name,
+    type: type || "CLIP",
+    getMediaPath: function () {
+      return mediaPath;
+    },
+    isSequence: function () {
+      return false;
+    },
+    moveBin: function (bin) {
+      world.moved.push({ item: item, bin: bin.name });
+    }
+  };
+  return item;
+}
+
+test("premiere context reports the sequence, playhead and tracks", function () {
+  var world = createPremiereWorld();
+  var v1 = world.addVideoTrack("V1");
+  world.addVideoTrack("Titles");
+  world.addClip(v1, { name: "Shot", start: 0, end: 4 });
+  world.playhead = 1.5;
+
+  var result = JSON.parse(world.sandbox.qkPrContext());
+  assert.strictEqual(result.ok, true, result.error);
+  assert.strictEqual(result.sequence, "Silence test sequence");
+  close(result.playhead, 1.5, "playhead");
+  assert.strictEqual(result.ticks, String(Math.round(1.5 * 254016000000)));
+  assert.strictEqual(result.tracks.length, 2);
+  assert.strictEqual(result.tracks[1].name, "Titles");
+  assert.strictEqual(result.tracks[0].clips, 1);
+  assert.strictEqual(result.tracks[0].locked, false);
+});
+
+test("premiere context fails cleanly with no open sequence", function () {
+  var world = createPremiereWorld({ noSequence: true });
+  var result = JSON.parse(world.sandbox.qkPrContext());
+  assert.strictEqual(result.ok, false);
+  assert.ok(/No open sequence/.test(result.error), result.error);
+});
+
+test("a recipe keys Opacity on the selected clip in one undo group", function () {
+  var world = createPremiereWorld();
+  var v1 = world.addVideoTrack("V1");
+  var clip = world.addClip(v1, { name: "Shot", start: 2, end: 6 });
+  world.selection = [clip];
+
+  var plan = prPlan({
+    opacity: [
+      { edge: "in", at: 0, value: 0 },
+      { edge: "in", at: 1, value: "base" }
+    ]
+  });
+  var result = JSON.parse(
+    world.sandbox.qkPrRecipeApply(JSON.stringify({ plan: plan, target: "selected" }))
+  );
+
+  assert.strictEqual(result.ok, true, result.error);
+  assert.strictEqual(result.clips, 1);
+  assert.strictEqual(result.keys, 2);
+  assert.strictEqual(world.undo.open, 1);
+  assert.strictEqual(world.undo.close, 1);
+  assert.ok(/Apply Test recipe/.test(world.undo.names[0]));
+
+  var param = clip._opacity._params.opacity;
+  assert.strictEqual(param._timeVarying, true);
+  assert.strictEqual(param._values.length, 2);
+  close(param._values[0].time.seconds, 2, "first key at the clip start");
+  close(param._values[1].time.seconds, 2.5, "second key at the end of the window");
+  close(param._values[0].value, 0, "starts transparent");
+  close(param._values[1].value, 100, "settles on the clip's own opacity");
+  assert.strictEqual(param._interp[0].type, 5, "smooth maps to bezier");
+});
+
+test("a slide recipe offsets Position by a fraction of the frame", function () {
+  var world = createPremiereWorld();
+  var v1 = world.addVideoTrack("V1");
+  var clip = world.addClip(v1, { name: "Shot", start: 0, end: 4 });
+  world.selection = [clip];
+
+  var plan = prPlan({
+    position: [
+      { edge: "in", at: 0, dx: -0.4, dy: 0 },
+      { edge: "in", at: 1, dx: 0, dy: 0 }
+    ]
+  });
+  var result = JSON.parse(
+    world.sandbox.qkPrRecipeApply(JSON.stringify({ plan: plan, target: "selected" }))
+  );
+
+  assert.strictEqual(result.ok, true, result.error);
+  var values = clip._motion._params.position._values;
+  assert.strictEqual(values.length, 2);
+  close(values[0].value[0], 960 - 0.4 * 1920, "starts 40% left of base");
+  close(values[0].value[1], 540, "vertical stays at base");
+  close(values[1].value[0], 960, "settles at base x");
+});
+
+test("a recipe can target the clip under the playhead", function () {
+  var world = createPremiereWorld();
+  var v1 = world.addVideoTrack("V1");
+  var clip = world.addClip(v1, { name: "Shot", start: 2, end: 6 });
+  world.playhead = 3;
+
+  var plan = prPlan({
+    rotation: [
+      { edge: "in", at: 0, value: -90 },
+      { edge: "in", at: 1, value: "base" }
+    ]
+  });
+  var result = JSON.parse(
+    world.sandbox.qkPrRecipeApply(
+      JSON.stringify({ plan: plan, target: "playhead", trackIndex: 0 })
+    )
+  );
+
+  assert.strictEqual(result.ok, true, result.error);
+  var values = clip._motion._params.rotation._values;
+  close(values[0].value, -90, "rotation offset is added to base");
+  close(values[1].value, 0, "settles at the base rotation");
+});
+
+test("a recipe fails clearly when nothing is selected", function () {
+  var world = createPremiereWorld();
+  world.addVideoTrack("V1");
+  var plan = prPlan({ opacity: [{ edge: "in", at: 0, value: 0 }, { edge: "in", at: 1, value: 100 }] });
+  var result = JSON.parse(
+    world.sandbox.qkPrRecipeApply(JSON.stringify({ plan: plan, target: "selected" }))
+  );
+  assert.strictEqual(result.ok, false);
+  assert.ok(/Nothing is selected/.test(result.error), result.error);
+});
+
+test("a recipe refuses a clip on a locked track", function () {
+  var world = createPremiereWorld();
+  var v1 = world.addVideoTrack("V1");
+  var clip = world.addClip(v1, { name: "Shot", start: 0, end: 4 });
+  v1.setLocked(1);
+  world.selection = [clip];
+
+  var plan = prPlan({ opacity: [{ edge: "in", at: 0, value: 0 }, { edge: "in", at: 1, value: 100 }] });
+  var result = JSON.parse(
+    world.sandbox.qkPrRecipeApply(JSON.stringify({ plan: plan, target: "selected" }))
+  );
+
+  assert.strictEqual(result.ok, false);
+  assert.ok(/locked/.test(result.error), result.error);
+  assert.strictEqual(clip._opacity._params.opacity._values.length, 0, "nothing was keyed");
+  assert.strictEqual(world.undo.open, world.undo.close, "undo closed on the error path");
+});
+
+test("a recipe skips an audio-only selection with a reason", function () {
+  var world = createPremiereWorld();
+  var a1 = world.addAudioTrack("A1");
+  var clip = world.addClip(a1, { name: "Take", start: 0, end: 4, path: "D:\\a.wav" });
+  world.selection = [clip];
+
+  var plan = prPlan({ opacity: [{ edge: "in", at: 0, value: 0 }, { edge: "in", at: 1, value: 100 }] });
+  var result = JSON.parse(
+    world.sandbox.qkPrRecipeApply(JSON.stringify({ plan: plan, target: "selected" }))
+  );
+
+  assert.strictEqual(result.ok, false);
+  assert.ok(/Only audio clips/.test(result.error), result.error);
+});
+
+test("a recipe skips a channel that already has keyframes", function () {
+  var world = createPremiereWorld();
+  var v1 = world.addVideoTrack("V1");
+  var clip = world.addClip(v1, { name: "Shot", start: 0, end: 4 });
+  world.selection = [clip];
+
+  var opacity = clip._opacity._params.opacity;
+  opacity._timeVarying = true;
+  opacity._keys.push({ seconds: 1 });
+
+  var plan = prPlan({ opacity: [{ edge: "in", at: 0, value: 0 }, { edge: "in", at: 1, value: 100 }] });
+  var result = JSON.parse(
+    world.sandbox.qkPrRecipeApply(JSON.stringify({ plan: plan, target: "selected" }))
+  );
+
+  assert.strictEqual(result.ok, false);
+  assert.ok(/already has keyframes/.test(result.error), result.error);
+  assert.strictEqual(opacity._values.length, 0, "the existing keys were left alone");
+});
+
+test("the host re-clamps a hand-edited recipe plan", function () {
+  var world = createPremiereWorld();
+  var v1 = world.addVideoTrack("V1");
+  var clip = world.addClip(v1, { name: "Shot", start: 0, end: 4 });
+  world.selection = [clip];
+
+  var plan = prPlan(
+    {
+      opacity: [{ edge: "in", at: 0, value: 500 }],
+      position: [{ edge: "in", at: 0, dx: 9, dy: -9 }]
+    },
+    { duration: 99 }
+  );
+  var result = JSON.parse(
+    world.sandbox.qkPrRecipeApply(JSON.stringify({ plan: plan, target: "selected" }))
+  );
+
+  assert.strictEqual(result.ok, true, result.error);
+  var opacity = clip._opacity._params.opacity;
+  close(opacity._values[0].value, 100, "opacity clamped to 100");
+  var position = clip._motion._params.position._values[0].value;
+  close(position[0], 960 + 2 * 1920, "dx clamped to 2 frames wide");
+  close(position[1], 540 - 2 * 1080, "dy clamped to 2 frames high");
+});
+
+test("a MOGRT inserts at the playhead on the chosen track", function () {
+  var fs = new MockFileSystem();
+  fs.files["C:/Library/title.mogrt"] = "mogrt";
+  var world = createPremiereWorld({ bridge: true, fs: fs });
+  world.addVideoTrack("V1");
+  world.addVideoTrack("V2");
+  world.playhead = 4;
+
+  var result = JSON.parse(
+    world.sandbox.qkPrMogrtInsert(
+      JSON.stringify({ path: "C:/Library/title.mogrt", trackIndex: 1 })
+    )
+  );
+
+  assert.strictEqual(result.ok, true, result.error);
+  assert.strictEqual(world.mgt.length, 1);
+  assert.strictEqual(world.mgt[0].vidTrackOffset, 1, "inserted on the chosen track");
+  assert.strictEqual(world.mgt[0].ticks, String(Math.round(4 * 254016000000)));
+  assert.strictEqual(world.insertedMgt.length, 1);
+  close(world.insertedMgt[0].start, 4, "starts at the playhead");
+  assert.strictEqual(result.params.length, 3);
+  assert.strictEqual(result.params[0].kind, "text");
+  assert.strictEqual(result.params[0].text, "Title");
+  assert.strictEqual(result.params[1].kind, "number");
+  assert.strictEqual(result.params[2].kind, "checkbox");
+  assert.strictEqual(world.undo.open, world.undo.close, "undo closed");
+});
+
+test("a MOGRT insert fails cleanly when Premiere refuses", function () {
+  var fs = new MockFileSystem();
+  fs.files["C:/Library/title.mogrt"] = "mogrt";
+  var world = createPremiereWorld({ bridge: true, fs: fs, mogrtFails: true });
+  world.addVideoTrack("V1");
+
+  var result = JSON.parse(
+    world.sandbox.qkPrMogrtInsert(JSON.stringify({ path: "C:/Library/title.mogrt", trackIndex: 0 }))
+  );
+  assert.strictEqual(result.ok, false);
+  assert.ok(/did not insert/.test(result.error), result.error);
+});
+
+test("MOGRT text is written back as the JSON payload", function () {
+  var fs = new MockFileSystem();
+  fs.files["C:/Library/title.mogrt"] = "mogrt";
+  var world = createPremiereWorld({ bridge: true, fs: fs });
+  world.addVideoTrack("V1");
+  var inserted = JSON.parse(
+    world.sandbox.qkPrMogrtInsert(JSON.stringify({ path: "C:/Library/title.mogrt", trackIndex: 0 }))
+  );
+
+  var result = JSON.parse(
+    world.sandbox.qkPrMogrtSetText(
+      JSON.stringify({ nodeId: inserted.nodeId, index: 0, text: "Hello\nWorld" })
+    )
+  );
+
+  assert.strictEqual(result.ok, true, result.error);
+  var payload = JSON.parse(world.insertedMgt[0].getMGTComponent()._params.text.getValue());
+  assert.strictEqual(payload.textEditValue, "Hello\nWorld");
+  assert.deepStrictEqual(payload.fontTextRunLength, [11]);
+});
+
+test("MOGRT text refuses a control that does not hold text", function () {
+  var fs = new MockFileSystem();
+  fs.files["C:/Library/title.mogrt"] = "mogrt";
+  var world = createPremiereWorld({ bridge: true, fs: fs });
+  world.addVideoTrack("V1");
+  var inserted = JSON.parse(
+    world.sandbox.qkPrMogrtInsert(JSON.stringify({ path: "C:/Library/title.mogrt", trackIndex: 0 }))
+  );
+
+  var result = JSON.parse(
+    world.sandbox.qkPrMogrtSetText(
+      JSON.stringify({ nodeId: inserted.nodeId, index: 1, text: "nope" })
+    )
+  );
+  assert.strictEqual(result.ok, false);
+  assert.ok(/does not hold text/.test(result.error), result.error);
+});
+
+test("MOGRT parameters can be re-read by node id", function () {
+  var fs = new MockFileSystem();
+  fs.files["C:/Library/title.mogrt"] = "mogrt";
+  var world = createPremiereWorld({ bridge: true, fs: fs });
+  world.addVideoTrack("V1");
+  var inserted = JSON.parse(
+    world.sandbox.qkPrMogrtInsert(JSON.stringify({ path: "C:/Library/title.mogrt", trackIndex: 0 }))
+  );
+
+  var result = JSON.parse(
+    world.sandbox.qkPrMogrtParams(JSON.stringify({ nodeId: inserted.nodeId }))
+  );
+  assert.strictEqual(result.ok, true, result.error);
+  assert.strictEqual(result.params.length, 3);
+  assert.strictEqual(result.params[1].value, 72);
+});
+
+test("the bin organizer creates the four standard bins once", function () {
+  var world = createPremiereWorld();
+  var first = JSON.parse(world.sandbox.qkPrBins(JSON.stringify({ action: "create" })));
+  assert.strictEqual(first.ok, true, first.error);
+  assert.deepStrictEqual(first.created, ["Footage", "Audio", "Graphics", "Exports"]);
+
+  var second = JSON.parse(world.sandbox.qkPrBins(JSON.stringify({ action: "create" })));
+  assert.strictEqual(second.created.length, 0);
+  assert.deepStrictEqual(second.existing, ["Footage", "Audio", "Graphics", "Exports"]);
+  assert.strictEqual(world.bins.length, 4, "no duplicate bins");
+});
+
+test("the bin organizer sorts the project selection by type", function () {
+  var world = createPremiereWorld();
+  var footage = prItem(world, "A001.mov", "C:/Media/A001.mov");
+  var audio = prItem(world, "Take.wav", "C:/Media/Take.wav");
+  var still = prItem(world, "Card.png", "C:/Media/Card.png");
+  var sequence = prItem(world, "Cut 1", "", "CLIP");
+  sequence.isSequence = function () {
+    return true;
+  };
+  world.projectSelection = [footage, audio, still, sequence];
+
+  var result = JSON.parse(world.sandbox.qkPrBins(JSON.stringify({ action: "sort" })));
+  assert.strictEqual(result.ok, true, result.error);
+  assert.strictEqual(result.moved, 4);
+  assert.deepStrictEqual(world.moved.map(function (entry) {
+    return entry.item.name + ">" + entry.bin;
+  }), ["A001.mov>Footage", "Take.wav>Audio", "Card.png>Graphics", "Cut 1>Exports"]);
+});
+
+test("the bin organizer renames the selection in one undo step", function () {
+  var world = createPremiereWorld();
+  var one = prItem(world, "Shot 1", "C:/Media/one.mov");
+  var two = prItem(world, "Shot 2", "C:/Media/two.mov");
+  world.projectSelection = [one, two];
+
+  var result = JSON.parse(
+    world.sandbox.qkPrBins(
+      JSON.stringify({ action: "rename", mode: "replace", find: "Shot", replace: "Scene" })
+    )
+  );
+  assert.strictEqual(result.ok, true, result.error);
+  assert.strictEqual(result.renamed, 2);
+  assert.strictEqual(one.name, "Scene 1");
+  assert.strictEqual(two.name, "Scene 2");
+  assert.strictEqual(world.undo.open, 1);
+  assert.strictEqual(world.undo.close, 1);
+});
+
+test("the bin organizer fails clearly with nothing selected in the project", function () {
+  var world = createPremiereWorld();
+  var result = JSON.parse(world.sandbox.qkPrBins(JSON.stringify({ action: "sort" })));
+  assert.strictEqual(result.ok, false);
+  assert.ok(/Nothing is selected in the Project panel/.test(result.error), result.error);
+  assert.strictEqual(world.undo.open, world.undo.close, "undo closed on the error path");
 });
 
 /* ---------------- report ---------------- */

@@ -527,6 +527,8 @@
             </div>
 
             <div class="qk-lib-preview__params" id="qk-lib-preview-params" hidden></div>
+            <div class="qk-lib-preview__target" id="qk-lib-preview-target" hidden></div>
+            <div class="qk-lib-preview__mogrt" id="qk-lib-preview-mogrt" hidden></div>
             <div class="qk-lib-preview__regen" id="qk-lib-preview-regen" hidden>
               <span class="qk-lib-preview__regen-text">These settings no longer match the saved preview.</span>
               <button type="button" class="qk-btn qk-btn--secondary qk-btn--xs" id="qk-lib-preview-regen-btn">Regenerate preview</button>
@@ -615,6 +617,43 @@
         </div>
 
         <p class="qk-lib-note" id="qk-lib-note" hidden></p>
+
+        <div class="qk-lib-bins" id="qk-lib-bins" hidden>
+          <div class="qk-lib-bins__head">
+            <span class="qk-lib-bins__title">Bin organizer</span>
+            <span class="qk-lib-bins__host">Premiere Pro only</span>
+          </div>
+          <div class="qk-lib-bins__row">
+            <button type="button" class="qk-btn qk-btn--secondary qk-btn--xs" id="qk-lib-bins-create"
+                    data-tip="Create the standard bins: Footage, Audio, Graphics, Exports">Create bins</button>
+            <button type="button" class="qk-btn qk-btn--secondary qk-btn--xs" id="qk-lib-bins-sort"
+                    data-tip="Move the Project-panel selection into the matching bin by file type">Sort selection</button>
+          </div>
+          <div class="qk-lib-bins__row">
+            <label class="qk-field"><span class="qk-label">Rename</span>
+              <select class="qk-select" id="qk-lib-bins-mode" data-tip="How the selected project items are renamed">
+                <option value="replace">Find and replace</option>
+                <option value="prefix">Add prefix and suffix</option>
+                <option value="number">Number in order</option>
+              </select>
+            </label>
+            <label class="qk-field"><span class="qk-label">Find</span>
+              <input class="qk-input" id="qk-lib-bins-find" type="text" autocomplete="off" data-tip="Text to find in each name">
+            </label>
+            <label class="qk-field"><span class="qk-label">Replace</span>
+              <input class="qk-input" id="qk-lib-bins-replace" type="text" autocomplete="off" data-tip="Text that replaces it">
+            </label>
+            <label class="qk-field"><span class="qk-label">Prefix</span>
+              <input class="qk-input" id="qk-lib-bins-prefix" type="text" autocomplete="off" data-tip="Text added before the name or number">
+            </label>
+            <label class="qk-field"><span class="qk-label">Suffix</span>
+              <input class="qk-input" id="qk-lib-bins-suffix" type="text" autocomplete="off" data-tip="Text added after the name or number">
+            </label>
+            <button type="button" class="qk-btn qk-btn--secondary qk-btn--xs" id="qk-lib-bins-rename"
+                    data-tip="Rename the selected Project-panel items in one undo step">Rename selection</button>
+          </div>
+          <p class="qk-lib-bins__note" id="qk-lib-bins-note" hidden></p>
+        </div>
 
         <div class="qk-lib-foot">
           <button type="button" class="qk-btn qk-btn--secondary qk-btn--xs" id="qk-lib-export"
@@ -720,6 +759,7 @@
   <script src="js/library-core.js"></script>
   <script src="js/preview-core.js"></script>
   <script src="js/text-presets.js"></script>
+<script src="js/pr-recipes.js"></script>
   <script src="js/panel.js"></script>
 </body>
 </html>

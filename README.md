@@ -4,13 +4,14 @@ A free, local-only panel for **Adobe After Effects** and **Adobe Premiere Pro**
 on Windows 10 and 11. One extension, eight tools, no account, no cloud, no
 tracking.
 
-Version **0.9.0** — Part 6C: a **data-driven text animation library** — 54
-original presets in 12 categories, a live parameter panel, and one-click
-**MOGRT export** into the shared library (single or all 54, with cancel). It
-joins Part 6B's preview pane, Part 6A's shared library (nested folders, smart
-collections, search, `.qkpack` sharing, Repair), the live After Effects tools
-(anchor, layers, easing, presets), the Premiere silence cutter, the Bridge, and
-the Part 1 shell and installer.
+Version **0.10.0** — Part 6D: the **Premiere side of the library** — insert a
+MOGRT at the playhead on a chosen video track and edit its text and exposed
+controls from the panel, apply 18 **keyframe recipes** (fade, slide in all four
+directions, scale pop, zoom, shake, spin, flicker) to selected clips or the clip
+under the playhead, and an optional **Bin organizer**. It joins Part 6C's text
+presets and MOGRT export, Part 6B's preview pane, Part 6A's shared library, the
+live After Effects tools (anchor, layers, easing, presets), the Premiere silence
+cutter, the Bridge, and the Part 1 shell and installer.
 
 ---
 
@@ -200,8 +201,9 @@ per item holding `item.json`, the asset and any previews.
   file by itself, and **Clear preview cache…** removes only the preview files.
 
 Applying an item works in **After Effects**: press **Apply**, double-click a
-card, or use the item menu. In Premiere Pro the button reads **Coming in 6D** —
-browsing, folders, packs and previews already work there.
+card, or use the item menu. In **Premiere Pro** the same button applies a
+**recipe** or inserts a **MOGRT** (see below); After Effects presets stay dimmed
+and wait for After Effects.
 
 ---
 
@@ -239,6 +241,71 @@ anything — the binary is placed in `bin\ffmpeg` on the machine that builds the
 extension (`scripts\fetch-ffmpeg.ps1`), and the panel also accepts an FFmpeg
 already on PATH or one you pick yourself. If none is found the tab says which
 places it looked in.
+
+---
+
+## Premiere library: recipes, MOGRTs and bins
+
+Everything here lives in the **Library** tab and reads the same folder as After
+Effects, so favourites, recents and folders stay in sync. Items for the other
+app are dimmed rather than hidden.
+
+### Keyframe recipes
+
+Select a recipe (Fade, Slide, Scale or Motion) and press **Apply recipe**. The
+panel writes real Motion/Opacity keyframes as **one undo step**:
+
+- **Fade** — in, out, or both, on Opacity.
+- **Slide** — in or out from the left, right, top or bottom, on Position.
+- **Scale** — pop in/out, zoom in, zoom out, on Scale (plus Opacity for the
+  pops).
+- **Motion** — shake (seven settling Position keys), spin in (Rotation), and
+  flicker in (Opacity).
+
+**Duration**, **easing** (smooth, linear or hold), **amount** and, where the
+recipe uses it, **direction** are controls in the preview pane. Positions are
+fractions of the frame, so they hold at any sequence size; scale values are
+multipliers of the clip's own scale, and rotation is a delta. A channel that
+already has keyframes is **skipped with a reason** instead of being overwritten —
+Premiere has no clip-comment marker to tag QuickKit's own keys, so Undo is the
+way back.
+
+### Targeting
+
+**Target = Selected clips** applies to every selected video clip or graphic;
+**Target = Clip under playhead** finds the clip at the CTI, searching down from
+the chosen track. Nothing selected, only audio selected, no clip under the
+playhead and locked tracks each produce a readable message and change nothing.
+
+### MOGRT insert and text
+
+Select a MOGRT item, choose a **video track** and press **Insert at playhead**.
+QuickKit calls Premiere's `sequence.importMGT`, then lists the template's
+exposed controls below the preview:
+
+- **Text** — type in the box and press **Update text**. QuickKit writes the
+  template's JSON payload (`textEditValue`, `fontTextRunLength`), so styling is
+  preserved; a plain-string control is written directly.
+- **Number** and **checkbox** controls are editable in place.
+- Anything else is shown read-only, because Premiere's scripting has no setter
+  for it.
+
+Control names are whatever the template exposes (Premiere localises them), and
+**Refresh** re-reads them from the clip. The MOGRT's duration and styling are
+defined by the template, not by the panel.
+
+### Bin organizer (optional)
+
+Premiere only. **Create bins** makes Footage, Audio, Graphics and Exports;
+**Sort selection** moves the Project-panel selection into the matching bin by
+file extension and `isSequence()`; **Rename selection** does find-and-replace,
+prefix/suffix or numbered names in one undo step. Bins are never deleted or
+renamed in bulk. The selection comes from
+`app.getCurrentProjectViewSelection()` (Premiere 15.4+); older builds get a
+readable message.
+
+API details and version floors: `docs/premiere-6d-api.md`. Real-app steps:
+`docs/manual-test-checklist-part6d.md`.
 
 ---
 

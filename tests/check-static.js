@@ -952,6 +952,96 @@ else fail("docs/manual-test-checklist-part6b.md is missing");
 if (/preview/i.test(readmeText) && /ffmpeg/i.test(readmeText)) pass("README documents previews and the bundled ffmpeg");
 else fail("README does not document previews and the bundled ffmpeg");
 
+/* 21. Premiere library features (Part 6D) */
+var recipePath = path.join(ROOT, "extension", "js", "pr-recipes.js");
+var recipeEngine = exists("extension/js/pr-recipes.js") ? require(recipePath) : null;
+
+if (!recipeEngine) {
+  fail("extension/js/pr-recipes.js is missing, so there is no Premiere recipe engine");
+} else {
+  if (recipeEngine.RECIPES.length === 18) pass("recipe engine has 18 recipes");
+  else fail("recipe engine has " + recipeEngine.RECIPES.length + " recipes (needs 18)");
+
+  var recipeIds = {};
+  var duplicateRecipe = "";
+  var recipeProblems = [];
+  recipeEngine.RECIPES.forEach(function (recipe) {
+    if (recipeIds[recipe.id]) duplicateRecipe = recipe.id;
+    recipeIds[recipe.id] = true;
+    if (!recipe.note) recipeProblems.push(recipe.id + " has no note");
+    if (recipeEngine.CATEGORIES.indexOf(recipe.category) === -1) recipeProblems.push(recipe.id + " has an unknown category");
+    if (!recipeEngine.defaultPlan(recipe.id)) recipeProblems.push(recipe.id + " compiles to no plan");
+  });
+  if (duplicateRecipe) fail("duplicate recipe id: " + duplicateRecipe);
+  else pass("recipe ids are unique");
+  if (recipeProblems.length) fail(recipeProblems.slice(0, 3).join("; "));
+  else pass("every recipe has a note, a known category and a plan");
+
+  var recipeCategories = recipeEngine.categories().filter(function (entry) { return entry.count > 0; });
+  if (recipeCategories.length === 4) pass("all 4 recipe categories are populated");
+  else fail("only " + recipeCategories.length + " recipe categories have recipes");
+}
+
+if (html.indexOf('src="js/pr-recipes.js"') === -1) fail("index.html does not load pr-recipes.js");
+else pass("index.html loads the Premiere recipe engine");
+
+if (panelJs.indexOf(".qkrecipe.json") === -1) fail("panel never seeds .qkrecipe.json items");
+else pass("panel seeds recipes as .qkrecipe.json library items");
+if (panelJs.indexOf("qk.recipes.seeded") === -1) fail("panel has no recipe seed key");
+else pass("panel remembers which recipes it seeded");
+
+["qkPrContext", "qkPrRecipeApply", "qkPrMogrtInsert", "qkPrMogrtParams", "qkPrMogrtSetText", "qkPrMogrtSetParam", "qkPrBins"].forEach(function (name) {
+  if (!new RegExp("function\\s+" + name + "\\s*\\(").test(hostSource)) fail("host has no " + name + "()");
+});
+if (["qkPrContext", "qkPrRecipeApply", "qkPrMogrtInsert", "qkPrMogrtParams", "qkPrMogrtSetText", "qkPrMogrtSetParam", "qkPrBins"].every(function (name) {
+  return new RegExp("function\\s+" + name + "\\s*\\(").test(hostSource);
+})) {
+  pass("host defines all 7 Premiere library entry points");
+}
+
+["importMGT(", "getMGTComponent", "AE.ADBE Motion", "AE.ADBE Opacity", "areKeyframesSupported", "setInterpolationTypeAtKey", "isLocked", "createBin", "moveBin", "getCurrentProjectViewSelection"].forEach(function (needle) {
+  if (hostSource.indexOf(needle) === -1) fail("host never uses " + needle);
+});
+if (["importMGT(", "getMGTComponent", "AE.ADBE Motion", "AE.ADBE Opacity", "areKeyframesSupported", "setInterpolationTypeAtKey", "isLocked", "createBin", "moveBin", "getCurrentProjectViewSelection"].every(function (needle) {
+  return hostSource.indexOf(needle) !== -1;
+})) {
+  pass("host uses the documented Premiere API (MOGRT, keyframes, locks, bins)");
+}
+
+["qk-lib-preview-target", "qk-lib-preview-mogrt", "qk-lib-bins", "qk-lib-bins-create", "qk-lib-bins-sort", "qk-lib-bins-rename"].forEach(function (id) {
+  if (html.indexOf('id="' + id + '"') === -1) fail("index.html is missing #" + id);
+});
+if (["qk-lib-preview-target", "qk-lib-preview-mogrt", "qk-lib-bins", "qk-lib-bins-create", "qk-lib-bins-sort", "qk-lib-bins-rename"].every(function (id) {
+  return html.indexOf('id="' + id + '"') !== -1;
+})) {
+  pass("the library pane has targeting, MOGRT controls and the bin organizer");
+}
+
+if (panelJs.indexOf('"Apply recipe"') === -1) fail("panel never labels the Premiere recipe action");
+else pass("panel labels the Premiere recipe action");
+if (panelJs.indexOf('"Insert at playhead"') === -1) fail("panel never labels the MOGRT insert action");
+else pass("panel labels the MOGRT insert action");
+
+var toolsCss = exists("extension/css/tools.css") ? read("extension/css/tools.css") : "";
+if (toolsCss.indexOf(".qk-lib-card.is-other-host") === -1) fail("unsupported library items are not dimmed");
+else pass("library items for the other app are dimmed");
+
+if (exists("docs/premiere-6d-api.md")) {
+  var apiDoc = read("docs/premiere-6d-api.md");
+  if (apiDoc.indexOf("importMGT") !== -1 && apiDoc.indexOf("getMGTComponent") !== -1 && apiDoc.indexOf("13.x") !== -1) {
+    pass("the Premiere API report documents MOGRT calls and version floors");
+  } else {
+    fail("docs/premiere-6d-api.md does not document the MOGRT calls and version floors");
+  }
+} else {
+  fail("docs/premiere-6d-api.md is missing");
+}
+
+if (exists("tests/pr-recipes.test.js")) pass("recipe test suite is present");
+else fail("tests/pr-recipes.test.js is missing");
+if (exists("docs/manual-test-checklist-part6d.md")) pass("Part 6D manual checklist is present");
+else fail("docs/manual-test-checklist-part6d.md is missing");
+
 /* report */
 passes.forEach(function (message) { console.log("PASS  " + message); });
 skips.forEach(function (message) { console.log("SKIP  " + message); });

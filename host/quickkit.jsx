@@ -7544,6 +7544,1163 @@ function qkBridgeInfo() {
   });
 }
 /* ============================================================
+ * Premiere library features (Part 6D)
+ *
+ * qkPrContext       - sequence, playhead, tracks and selection for the panel.
+ * qkPrRecipeApply   - keys Motion/Opacity on selected clips or the clip under
+ *                     the playhead, one undo group.
+ * qkPrMogrtInsert   - imports a .mogrt at the playhead on a chosen video track.
+ * qkPrMogrtParams   - reads the template's exposed controls.
+ * qkPrMogrtSetText  - writes a text control (JSON payload or plain string).
+ * qkPrMogrtSetParam - writes a numeric or checkbox control.
+ * qkPrBins          - optional bin organizer: create, sort, bulk rename.
+ *
+ * API notes and version floors: docs/premiere-6d-api.md. Everything here is
+ * Premiere-only and every call is feature-detected: an older build gets a
+ * readable message, never a raw exception.
+ * ============================================================ */
+
+var QK_PR_TICKS = 254016000000;
+
+function qkPrSequence() {
+  var sequence = null;
+  try {
+    sequence = app.project ? app.project.activeSequence : null;
+  } catch (eSeq) {
+    return { error: "Premiere did not return a project. Open a project and try again." };
+  }
+  if (!sequence) {
+    return { error: "No open sequence. Open the sequence you want to work on in Premiere Pro, then try again." };
+  }
+  return { sequence: sequence };
+}
+
+function qkPrSeconds(time) {
+  if (!time) return 0;
+  if (typeof time === "number") return time;
+  var seconds = Number(time.seconds);
+  if (!isNaN(seconds)) return seconds;
+  var ticks = Number(time.ticks);
+  if (!isNaN(ticks)) return ticks / QK_PR_TICKS;
+  return 0;
+}
+
+function qkPrTicks(seconds) {
+  var value = Number(seconds);
+  if (isNaN(value) || value < 0) value = 0;
+  return String(Math.round(value * QK_PR_TICKS));
+}
+
+function qkPrTime(seconds) {
+  var time = new Time();
+  time.seconds = Number(seconds);
+  return time;
+}
+
+function qkPrNumber(value, fallback) {
+  var number = Number(value);
+  return isNaN(number) ? fallback : number;
+}
+
+function qkPrTrackLocked(track) {
+  if (!track) return null;
+  try {
+    if (typeof track.isLocked === "function") return track.isLocked() ? true : false;
+  } catch (eLock) {}
+  return null;
+}
+
+function qkPrTrackName(sequence, index) {
+  try {
+    var track = sequence.videoTracks[index];
+    if (track && track.name) return qkStr(track.name);
+  } catch (eName) {}
+  return "V" + (index + 1);
+}
+
+function qkPrComponent(clip, wanted) {
+  if (!clip) return null;
+  var components = null;
+  try {
+    components = clip.components;
+  } catch (eComp) {
+    return null;
+  }
+  if (!components) return null;
+  var count = qkPrNumber(components.numItems, 0);
+  var i;
+  for (i = 0; i < count; i++) {
+    var component = components[i];
+    if (!component) continue;
+    if (qkStr(component.matchName) === wanted) return component;
+  }
+  var label = wanted === "AE.ADBE Motion" ? "Motion" : (wanted === "AE.ADBE Opacity" ? "Opacity" : "");
+  if (label !== "") {
+    for (i = 0; i < count; i++) {
+      var byName = components[i];
+      if (byName && qkStr(byName.displayName) === label) return byName;
+    }
+  }
+  return null;
+}
+
+function qkPrParam(component, name) {
+  if (!component) return null;
+  var properties = null;
+  try {
+    properties = component.properties;
+  } catch (eProps) {
+    return null;
+  }
+  if (!properties) return null;
+
+  try {
+    if (typeof properties.getParamForDisplayName === "function") {
+      var found = properties.getParamForDisplayName(name);
+      if (found) return found;
+    }
+  } catch (eByName) {}
+
+  var count = qkPrNumber(properties.numItems, 0);
+  var i;
+  for (i = 0; i < count; i++) {
+    var param = properties[i];
+    if (param && qkStr(param.displayName) === name) return param;
+  }
+  for (i = 0; i < count; i++) {
+    var loose = properties[i];
+    if (loose && qkStr(loose.displayName).toLowerCase() === name.toLowerCase()) return loose;
+  }
+  return null;
+}
+
+function qkPrPoint(value) {
+  if (!value) return null;
+  try {
+    if (typeof value.length === "number" && value.length >= 2) {
+      return { x: qkPrNumber(value[0], 0), y: qkPrNumber(value[1], 0) };
+    }
+  } catch (eLength) {}
+  if (typeof value === "object") {
+    if (value.x !== undefined && value.y !== undefined) {
+      return { x: qkPrNumber(value.x, 0), y: qkPrNumber(value.y, 0) };
+    }
+  }
+  if (typeof value === "string") {
+    var parts = value.split(",");
+    if (parts.length >= 2) {
+      return { x: qkPrNumber(parts[0], 0), y: qkPrNumber(parts[1], 0) };
+    }
+  }
+  return null;
+}
+
+function qkPrScale(value) {
+  try {
+    if (typeof value.length === "number" && value.length >= 2) {
+      return { w: qkPrNumber(value[0], 100), h: qkPrNumber(value[1], 100), pair: true };
+    }
+  } catch (eLength) {}
+  var single = qkPrNumber(value, 100);
+  return { w: single, h: single, pair: false };
+}
+
+function qkPrParamBase(param, channel) {
+  var value = null;
+  try {
+    value = param.getValue();
+  } catch (eValue) {}
+  if (channel === "opacity") return qkPrNumber(value, 100);
+  if (channel === "rotation") return qkPrNumber(value, 0);
+  if (channel === "scale") return qkPrScale(value);
+  return qkPrPoint(value) || { x: 0, y: 0 };
+}
+
+function qkPrChannelParam(clip, channel) {
+  if (channel === "opacity") {
+    return qkPrParam(qkPrComponent(clip, "AE.ADBE Opacity"), "Opacity");
+  }
+  var motion = qkPrComponent(clip, "AE.ADBE Motion");
+  if (!motion) return null;
+  if (channel === "position") return qkPrParam(motion, "Position");
+  if (channel === "scale") {
+    var scale = qkPrParam(motion, "Scale");
+    if (scale) return scale;
+    return qkPrParam(motion, "Scale Width");
+  }
+  if (channel === "rotation") return qkPrParam(motion, "Rotation");
+  return null;
+}
+
+function qkPrPlanChannels(plan) {
+  var names = ["opacity", "position", "scale", "rotation"];
+  var out = [];
+  for (var i = 0; i < names.length; i++) {
+    var keys = plan.channels ? plan.channels[names[i]] : null;
+    if (keys && keys.length) out.push(names[i]);
+  }
+  return out;
+}
+
+/* Re-clamps a plan that came from a panel file: a library pack can carry a
+   hand-edited recipe, so the host never trusts the numbers. */
+function qkPrPlanRead(raw) {
+  if (!raw || typeof raw !== "object") return { error: "QuickKit could not read that recipe." };
+  var plan = {
+    id: qkPresetCleanText(raw.id, 60),
+    name: qkPresetCleanText(raw.name, 60) || "recipe",
+    easing: qkStr(raw.easing),
+    duration: qkPrNumber(raw.duration, 0.6),
+    channels: {}
+  };
+  if (plan.easing !== "linear" && plan.easing !== "hold") plan.easing = "smooth";
+  if (plan.duration < 0.2) plan.duration = 0.2;
+  if (plan.duration > 3) plan.duration = 3;
+
+  var names = ["opacity", "position", "scale", "rotation"];
+  var total = 0;
+  for (var i = 0; i < names.length; i++) {
+    var channel = names[i];
+    var source = raw.channels ? raw.channels[channel] : null;
+    if (!source || typeof source.length !== "number") continue;
+    var keys = [];
+    for (var k = 0; k < source.length && k < 40; k++) {
+      var entry = source[k];
+      if (!entry) continue;
+      var edge = qkStr(entry.edge) === "out" ? "out" : "in";
+      var at = qkPrNumber(entry.at, 0);
+      if (at < 0) at = 0;
+      if (at > 1) at = 1;
+      var key = { edge: edge, at: at };
+      if (channel === "position") {
+        key.dx = qkPrNumber(entry.dx, 0);
+        key.dy = qkPrNumber(entry.dy, 0);
+        if (key.dx < -2) key.dx = -2;
+        if (key.dx > 2) key.dx = 2;
+        if (key.dy < -2) key.dy = -2;
+        if (key.dy > 2) key.dy = 2;
+      } else if (channel === "scale") {
+        if (entry.value === "base") {
+          key.value = "base";
+        } else {
+          key.value = qkPrNumber(entry.value, 1);
+          if (key.value < 0) key.value = 0;
+          if (key.value > 5) key.value = 5;
+        }
+      } else if (channel === "rotation") {
+        if (entry.value === "base") {
+          key.value = "base";
+        } else {
+          key.value = qkPrNumber(entry.value, 0);
+          if (key.value < -3600) key.value = -3600;
+          if (key.value > 3600) key.value = 3600;
+        }
+      } else {
+        if (entry.value === "base") {
+          key.value = "base";
+        } else {
+          key.value = qkPrNumber(entry.value, 0);
+          if (key.value < 0) key.value = 0;
+          if (key.value > 100) key.value = 100;
+        }
+      }
+      keys.push(key);
+    }
+    if (keys.length) {
+      plan.channels[channel] = keys;
+      total += keys.length;
+    }
+  }
+  if (!total) return { error: "That recipe has no keyframes. Re-import it or pick another." };
+  return { plan: plan };
+}
+
+function qkPrKeyInterpolation(easing) {
+  if (easing === "linear") return 0;
+  if (easing === "hold") return 4;
+  return 5;
+}
+
+function qkPrWindows(clip, duration) {
+  var start = qkPrSeconds(clip.start);
+  var end = qkPrSeconds(clip.end);
+  var length = end - start;
+  var windows = { in: null, out: null };
+  if (length < 0.05) return windows;
+  var span = duration;
+  if (span > length) span = length;
+  windows["in"] = { start: start, end: start + span };
+  windows["out"] = { start: end - span, end: end };
+  return windows;
+}
+
+function qkPrApplyChannel(clip, channel, keys, plan, windows, width, height, stats) {
+  var param = qkPrChannelParam(clip, channel);
+  if (!param) {
+    stats.notes.push(clip.name + ": no " + channel + " control in this clip");
+    return false;
+  }
+  try {
+    if (typeof param.areKeyframesSupported === "function" && !param.areKeyframesSupported()) {
+      stats.notes.push(clip.name + ": " + channel + " cannot be keyframed");
+      return false;
+    }
+  } catch (eSupport) {}
+
+  var existing = [];
+  try {
+    if (param.isTimeVarying() && typeof param.getKeys === "function") {
+      var found = param.getKeys();
+      if (found && found.length) existing = found;
+    }
+  } catch (eKeys) {}
+  if (existing.length) {
+    stats.notes.push(clip.name + ": already has keyframes on " + channel + " (undo those first)");
+    return false;
+  }
+
+  var base = qkPrParamBase(param, channel);
+  var interpolation = qkPrKeyInterpolation(plan.easing);
+  var written = 0;
+  var lastTime = -1;
+
+  try {
+    if (!param.isTimeVarying()) param.setTimeVarying(true);
+  } catch (eVarying) {
+    stats.notes.push(clip.name + ": Premiere refused to enable keyframes on " + channel);
+    return false;
+  }
+
+  for (var i = 0; i < keys.length; i++) {
+    var key = keys[i];
+    var window = windows[key.edge];
+    if (!window) continue;
+    var at = qkPrNumber(key.at, 0);
+    var timeSeconds = window.start + at * (window.end - window.start);
+    if (timeSeconds <= lastTime + 0.0001) timeSeconds = lastTime + 0.0001;
+    lastTime = timeSeconds;
+
+    var value = null;
+    if (channel === "opacity") {
+      value = key.value === "base" ? base : qkPrNumber(key.value, base);
+    } else if (channel === "position") {
+      value = [base.x + qkPrNumber(key.dx, 0) * width, base.y + qkPrNumber(key.dy, 0) * height];
+    } else if (channel === "scale") {
+      var multiplier = key.value === "base" ? 1 : qkPrNumber(key.value, 1);
+      value = base.pair ? [base.w * multiplier, base.h * multiplier] : base.w * multiplier;
+    } else if (channel === "rotation") {
+      value = base + (key.value === "base" ? 0 : qkPrNumber(key.value, 0));
+    }
+
+    var time = qkPrTime(timeSeconds);
+    try {
+      param.addKey(time);
+    } catch (eAdd) {}
+    try {
+      param.setValueAtKey(time, value, 1);
+      if (typeof param.setInterpolationTypeAtKey === "function") {
+        param.setInterpolationTypeAtKey(time, interpolation, 1);
+      }
+      written++;
+    } catch (eSet) {
+      stats.notes.push(clip.name + ": " + channel + " key at " + timeSeconds.toFixed(2) + " s failed (" + qkErrText(eSet) + ")");
+    }
+  }
+  stats.keys += written;
+  return written > 0;
+}
+
+function qkPrClipLabel(clip) {
+  var name = "";
+  try {
+    name = qkStr(clip.name);
+  } catch (eName) {}
+  return name || "clip";
+}
+
+function qkPrApplyPlanToClip(sequence, clip, plan, stats) {
+  if (!clip) return false;
+  var type = 0;
+  try {
+    type = qkPrNumber(clip.type, 1);
+  } catch (eType) {}
+  if (type === 2) {
+    stats.notes.push(qkPrClipLabel(clip) + " is an audio clip");
+    return false;
+  }
+  var start = qkPrSeconds(clip.start);
+  var end = qkPrSeconds(clip.end);
+  if (end - start < 0.05) {
+    stats.notes.push(qkPrClipLabel(clip) + " is too short for a recipe");
+    return false;
+  }
+
+  var channels = qkPrPlanChannels(plan);
+  var i;
+  for (i = 0; i < channels.length; i++) {
+    if (!qkPrChannelParam(clip, channels[i])) {
+      stats.notes.push(qkPrClipLabel(clip) + ": no " + channels[i] + " control (is it a graphic or an adjustment layer?)");
+      return false;
+    }
+  }
+
+  var windows = qkPrWindows(clip, plan.duration);
+  var width = 1920;
+  var height = 1080;
+  try {
+    width = qkPrNumber(sequence.frameSizeHorizontal, 1920);
+    height = qkPrNumber(sequence.frameSizeVertical, 1080);
+  } catch (eSize) {}
+
+  var appliedAny = false;
+  for (i = 0; i < channels.length; i++) {
+    if (qkPrApplyChannel(clip, channels[i], plan.channels[channels[i]], plan, windows, width, height, stats)) {
+      appliedAny = true;
+    }
+  }
+  if (appliedAny) stats.clips++;
+  return appliedAny;
+}
+
+function qkPrClipTrackIndex(sequence, clip) {
+  try {
+    if (clip.parentTrackIndex !== undefined && clip.parentTrackIndex !== null) {
+      var direct = qkPrNumber(clip.parentTrackIndex, -1);
+      if (direct >= 0) return direct;
+    }
+  } catch (eParent) {}
+  var tracks = sequence.videoTracks;
+  var count = qkPrNumber(tracks ? tracks.numTracks : 0, 0);
+  for (var t = 0; t < count; t++) {
+    var list = tracks[t].clips;
+    var n = qkPrNumber(list ? list.numItems : 0, 0);
+    for (var i = 0; i < n; i++) {
+      if (list[i] === clip) return t;
+    }
+  }
+  return -1;
+}
+
+function qkPrSelection(sequence) {
+  var selection = [];
+  try {
+    selection = sequence.getSelection();
+  } catch (eSelection) {
+    return { error: "Premiere did not return the timeline selection." };
+  }
+  if (!selection || !selection.length) {
+    return { error: "Nothing is selected. Select one or more clips on the timeline, or switch Target to Clip under playhead." };
+  }
+  return { items: selection };
+}
+
+function qkPrPlayheadClip(sequence, trackIndex) {
+  var time = null;
+  try {
+    time = qkPrSeconds(sequence.getPlayerPosition());
+  } catch (eTime) {
+    return { error: "Premiere did not return the playhead position." };
+  }
+  var tracks = sequence.videoTracks;
+  var count = qkPrNumber(tracks ? tracks.numTracks : 0, 0);
+  if (count === 0) return { error: "This sequence has no video tracks." };
+
+  var start = trackIndex >= 0 && trackIndex < count ? trackIndex : count - 1;
+  for (var t = start; t >= 0; t--) {
+    var track = tracks[t];
+    var list = track.clips;
+    var n = qkPrNumber(list ? list.numItems : 0, 0);
+    for (var i = 0; i < n; i++) {
+      var clip = list[i];
+      var clipStart = qkPrSeconds(clip.start);
+      var clipEnd = qkPrSeconds(clip.end);
+      if (time >= clipStart - 0.0001 && time < clipEnd - 0.0001) {
+        return { clip: clip, trackIndex: t, time: time };
+      }
+    }
+    if (trackIndex >= 0 && trackIndex < count) break;
+  }
+  return { error: "No clip under the playhead. Move the playhead over a clip, or select clips instead." };
+}
+
+function qkPrRecipeApply(payloadJson) {
+  if (qkHostId() !== "PPRO") {
+    return qkErr("Premiere keyframe recipes run in Premiere Pro. In After Effects use the Text tab.");
+  }
+  var payload = null;
+  try {
+    payload = qkJsonParse(qkStr(payloadJson));
+  } catch (ePayload) {
+    return qkErr("QuickKit could not read that recipe.");
+  }
+  if (!payload || typeof payload !== "object") return qkErr("QuickKit could not read that recipe.");
+
+  var read = qkPrPlanRead(payload.plan);
+  if (read.error) return qkErr(read.error);
+  var plan = read.plan;
+
+  var found = qkPrSequence();
+  if (found.error) return qkErr(found.error);
+  var sequence = found.sequence;
+
+  var target = qkStr(payload.target) === "playhead" ? "playhead" : "selected";
+  var trackIndex = qkPrNumber(payload.trackIndex, -1);
+  var targets = [];
+  var label = "";
+
+  if (target === "playhead") {
+    var under = qkPrPlayheadClip(sequence, trackIndex);
+    if (under.error) return qkErr(under.error);
+    targets.push({ clip: under.clip, trackIndex: under.trackIndex });
+    label = qkPrClipLabel(under.clip);
+  } else {
+    var selected = qkPrSelection(sequence);
+    if (selected.error) return qkErr(selected.error);
+    for (var i = 0; i < selected.items.length; i++) {
+      var item = selected.items[i];
+      if (!item) continue;
+      var type = 1;
+      try {
+        type = qkPrNumber(item.type, 1);
+      } catch (eType) {}
+      if (type === 2) continue;
+      targets.push({ clip: item, trackIndex: qkPrClipTrackIndex(sequence, item) });
+    }
+    if (!targets.length) {
+      return qkErr("Only audio clips are selected. Select video clips or graphics, or switch Target to Clip under playhead.");
+    }
+    label = targets.length === 1 ? qkPrClipLabel(targets[0].clip) : qkPlural(targets.length, "clip", "clips");
+  }
+
+  var stats = { clips: 0, keys: 0, notes: [], locked: [] };
+  var started = qkBeginUndo("QuickKit: Apply " + plan.name);
+  try {
+    for (var t = 0; t < targets.length; t++) {
+      var entry = targets[t];
+      var locked = entry.trackIndex >= 0 ? qkPrTrackLocked(sequence.videoTracks[entry.trackIndex]) : null;
+      if (locked === true) {
+        stats.locked.push(qkPrTrackName(sequence, entry.trackIndex));
+        stats.notes.push(qkPrClipLabel(entry.clip) + " is on locked " + qkPrTrackName(sequence, entry.trackIndex));
+        continue;
+      }
+      qkPrApplyPlanToClip(sequence, entry.clip, plan, stats);
+    }
+  } finally {
+    qkEndUndo(started);
+  }
+
+  if (stats.clips === 0) {
+    var why = stats.notes.length ? stats.notes[0] : "Premiere did not accept any keyframes.";
+    if (stats.locked.length) {
+      why = "The clip is on locked " + stats.locked[0] + ". Unlock the track and try again.";
+    }
+    return qkErr(why);
+  }
+
+  var message = "Applied " + plan.name + " to " + label + " (" + qkPlural(stats.keys, "keyframe", "keyframes") + ").";
+  if (stats.notes.length) message += " " + stats.notes.join("; ") + ".";
+  return qkJsonStringify({
+    ok: true,
+    message: message,
+    clips: stats.clips,
+    keys: stats.keys,
+    notes: stats.notes,
+    locked: stats.locked
+  });
+}
+
+function qkPrContext() {
+  if (qkHostId() !== "PPRO") {
+    return qkErr("This is the Premiere side of the library. Switch to Premiere Pro.");
+  }
+  var found = qkPrSequence();
+  if (found.error) return qkErr(found.error);
+  var sequence = found.sequence;
+
+  var playhead = 0;
+  try {
+    playhead = qkPrSeconds(sequence.getPlayerPosition());
+  } catch (ePlay) {}
+
+  var fps = 0;
+  try {
+    var timebase = Number(sequence.timebase);
+    if (!isNaN(timebase) && timebase > 0) fps = QK_PR_TICKS / timebase;
+  } catch (eFps) {}
+
+  var tracks = [];
+  try {
+    var list = sequence.videoTracks;
+    var count = qkPrNumber(list ? list.numTracks : 0, 0);
+    for (var i = 0; i < count; i++) {
+      var track = list[i];
+      tracks.push({
+        index: i,
+        name: qkStr(track.name) || ("V" + (i + 1)),
+        locked: qkPrTrackLocked(track),
+        clips: qkPrNumber(track.clips ? track.clips.numItems : 0, 0)
+      });
+    }
+  } catch (eTracks) {}
+
+  var selection = [];
+  try {
+    var selected = sequence.getSelection();
+    for (var s = 0; selected && s < selected.length; s++) {
+      var clip = selected[s];
+      if (!clip) continue;
+      selection.push({
+        name: qkPrClipLabel(clip),
+        trackIndex: qkPrClipTrackIndex(sequence, clip),
+        start: qkPrSeconds(clip.start),
+        end: qkPrSeconds(clip.end),
+        type: qkPrNumber(clip.type, 1)
+      });
+    }
+  } catch (eSel) {}
+
+  var projectItems = 0;
+  try {
+    projectItems = qkPrNumber(app.project.rootItem.children.numItems, 0);
+  } catch (eItems) {}
+
+  var name = "";
+  try {
+    name = qkStr(sequence.name);
+  } catch (eName) {}
+
+  return qkJsonStringify({
+    ok: true,
+    sequence: name,
+    playhead: playhead,
+    ticks: qkPrTicks(playhead),
+    fps: fps,
+    tracks: tracks,
+    selection: selection,
+    projectItems: projectItems
+  });
+}
+
+/* ---------- MOGRT ---------- */
+
+function qkPrMogrtComponent(clip) {
+  if (!clip) return null;
+  try {
+    if (typeof clip.getMGTComponent === "function") return clip.getMGTComponent();
+  } catch (eComp) {}
+  return null;
+}
+
+function qkPrMogrtRead(component) {
+  var out = [];
+  if (!component) return out;
+  var properties = null;
+  try {
+    properties = component.properties;
+  } catch (eProps) {
+    return out;
+  }
+  if (!properties) return out;
+  var count = qkPrNumber(properties.numItems, 0);
+  for (var i = 0; i < count; i++) {
+    var param = properties[i];
+    if (!param) continue;
+    var name = "";
+    try {
+      name = qkStr(param.displayName);
+    } catch (eName) {}
+    var value = null;
+    try {
+      value = param.getValue();
+    } catch (eValue) {}
+
+    var kind = "other";
+    var text = "";
+    var editable = false;
+    var number = null;
+    var checked = null;
+
+    if (typeof value === "string") {
+      if (value.length && value.charAt(0) === "{") {
+        var parsed = null;
+        try {
+          parsed = qkJsonParse(value);
+        } catch (eParse) {}
+        if (parsed && typeof parsed === "object" && parsed.textEditValue !== undefined) {
+          kind = "text";
+          text = qkStr(parsed.textEditValue);
+          editable = true;
+        } else {
+          kind = "json";
+        }
+      } else {
+        kind = "text";
+        text = value;
+        editable = true;
+      }
+    } else if (typeof value === "boolean") {
+      kind = "checkbox";
+      checked = value;
+      editable = true;
+    } else if (typeof value === "number") {
+      kind = "number";
+      number = value;
+      editable = true;
+    }
+
+    out.push({
+      index: i,
+      name: name || ("Control " + (i + 1)),
+      kind: kind,
+      text: text,
+      value: number,
+      checked: checked,
+      editable: editable
+    });
+  }
+  return out;
+}
+
+function qkPrFindClip(sequence, nodeId) {
+  var wanted = qkStr(nodeId);
+  if (wanted === "") return null;
+  var groups = [sequence.videoTracks, sequence.audioTracks];
+  for (var g = 0; g < groups.length; g++) {
+    var tracks = groups[g];
+    var count = qkPrNumber(tracks ? tracks.numTracks : 0, 0);
+    for (var t = 0; t < count; t++) {
+      var list = tracks[t].clips;
+      var n = qkPrNumber(list ? list.numItems : 0, 0);
+      for (var i = 0; i < n; i++) {
+        var clip = list[i];
+        if (clip && qkStr(clip.nodeId) === wanted) return clip;
+      }
+    }
+  }
+  return null;
+}
+
+function qkPrMogrtInsert(payloadJson) {
+  if (qkHostId() !== "PPRO") {
+    return qkErr("MOGRTs are inserted in Premiere Pro. In After Effects, export them from the Text tab.");
+  }
+  var payload = null;
+  try {
+    payload = qkJsonParse(qkStr(payloadJson));
+  } catch (ePayload) {
+    return qkErr("QuickKit could not read that MOGRT item.");
+  }
+  if (!payload || typeof payload !== "object") return qkErr("QuickKit could not read that MOGRT item.");
+
+  var path = qkStr(payload.path);
+  if (path === "") return qkErr("The MOGRT file is missing from the library folder.");
+  try {
+    var file = new File(path);
+    if (!file.exists) return qkErr("The MOGRT file is not on disk: " + path);
+  } catch (eFile) {
+    return qkErr("QuickKit cannot check the MOGRT file: " + path);
+  }
+
+  var found = qkPrSequence();
+  if (found.error) return qkErr(found.error);
+  var sequence = found.sequence;
+
+  var trackIndex = qkPrNumber(payload.trackIndex, 0);
+  var trackCount = qkPrNumber(sequence.videoTracks ? sequence.videoTracks.numTracks : 0, 0);
+  if (trackCount === 0) return qkErr("This sequence has no video tracks.");
+  if (trackIndex < 0) trackIndex = 0;
+  if (trackIndex >= trackCount) trackIndex = trackCount - 1;
+
+  var locked = qkPrTrackLocked(sequence.videoTracks[trackIndex]);
+  if (locked === true) {
+    return qkErr(qkPrTrackName(sequence, trackIndex) + " is locked. Unlock the track, then insert the MOGRT again.");
+  }
+
+  var ticks = "";
+  try {
+    ticks = qkPrTicks(qkPrSeconds(sequence.getPlayerPosition()));
+  } catch (ePlay) {
+    return qkErr("Premiere did not return the playhead position.");
+  }
+
+  var inserted = null;
+  var started = qkBeginUndo("QuickKit: Insert MOGRT");
+  try {
+    inserted = sequence.importMGT(path, ticks, trackIndex, 0);
+  } catch (eImport) {
+    qkEndUndo(started);
+    return qkErr("Premiere could not insert the MOGRT (" + qkErrText(eImport) + "). Check that the file opens in Essential Graphics.");
+  }
+  qkEndUndo(started);
+
+  if (!inserted) {
+    return qkErr("Premiere did not insert the MOGRT. It may be damaged, or made by a newer After Effects than this Premiere.");
+  }
+
+  var component = qkPrMogrtComponent(inserted);
+  var params = qkPrMogrtRead(component);
+  var name = qkPrClipLabel(inserted);
+
+  if (!component) {
+    return qkJsonStringify({
+      ok: true,
+      inserted: true,
+      nodeId: qkStr(inserted.nodeId),
+      name: name,
+      start: qkPrSeconds(inserted.start),
+      end: qkPrSeconds(inserted.end),
+      trackIndex: trackIndex,
+      params: [],
+      message: "Inserted \"" + name + "\" on " + qkPrTrackName(sequence, trackIndex) + ", but this template exposes no editable controls."
+    });
+  }
+
+  return qkJsonStringify({
+    ok: true,
+    inserted: true,
+    nodeId: qkStr(inserted.nodeId),
+    name: name,
+    start: qkPrSeconds(inserted.start),
+    end: qkPrSeconds(inserted.end),
+    trackIndex: trackIndex,
+    params: params,
+    message: "Inserted \"" + name + "\" on " + qkPrTrackName(sequence, trackIndex) + " with " + qkPlural(params.length, "control", "controls") + "."
+  });
+}
+
+function qkPrMogrtParams(payloadJson) {
+  if (qkHostId() !== "PPRO") return qkErr("MOGRT controls are Premiere-only.");
+  var payload = null;
+  try {
+    payload = qkJsonParse(qkStr(payloadJson));
+  } catch (ePayload) {
+    return qkErr("QuickKit could not read that MOGRT item.");
+  }
+  var found = qkPrSequence();
+  if (found.error) return qkErr(found.error);
+  var clip = qkPrFindClip(found.sequence, payload ? payload.nodeId : "");
+  if (!clip) return qkErr("That MOGRT is no longer on the timeline. Insert it again.");
+  var component = qkPrMogrtComponent(clip);
+  if (!component) return qkErr("That clip is not a MOGRT any more.");
+  var params = qkPrMogrtRead(component);
+  return qkJsonStringify({
+    ok: true,
+    nodeId: qkStr(clip.nodeId),
+    name: qkPrClipLabel(clip),
+    params: params,
+    message: qkPlural(params.length, "control", "controls") + " read from \"" + qkPrClipLabel(clip) + "\"."
+  });
+}
+
+function qkPrMogrtSetText(payloadJson) {
+  if (qkHostId() !== "PPRO") return qkErr("MOGRT controls are Premiere-only.");
+  var payload = null;
+  try {
+    payload = qkJsonParse(qkStr(payloadJson));
+  } catch (ePayload) {
+    return qkErr("QuickKit could not read that MOGRT change.");
+  }
+  if (!payload) return qkErr("QuickKit could not read that MOGRT change.");
+
+  var text = qkStr(payload.text);
+  if (text.length > 4000) text = text.substring(0, 4000);
+
+  var found = qkPrSequence();
+  if (found.error) return qkErr(found.error);
+  var clip = qkPrFindClip(found.sequence, payload.nodeId);
+  if (!clip) return qkErr("That MOGRT is no longer on the timeline. Insert it again.");
+  var component = qkPrMogrtComponent(clip);
+  if (!component) return qkErr("That clip is not a MOGRT any more.");
+
+  var index = qkPrNumber(payload.index, -1);
+  var param = null;
+  try {
+    param = component.properties[index];
+  } catch (eParam) {}
+  if (!param) return qkErr("That control no longer exists in this template.");
+
+  var raw = null;
+  try {
+    raw = param.getValue();
+  } catch (eValue) {}
+  if (typeof raw !== "string") return qkErr("That control does not hold text.");
+
+  var write = text;
+  if (raw.length && raw.charAt(0) === "{") {
+    var parsed = null;
+    try {
+      parsed = qkJsonParse(raw);
+    } catch (eParse) {}
+    if (!parsed || typeof parsed !== "object" || parsed.textEditValue === undefined) {
+      return qkErr("That control is not a text control QuickKit can edit.");
+    }
+    parsed.textEditValue = text;
+    if (parsed.fontTextRunLength !== undefined) parsed.fontTextRunLength = [text.length];
+    write = qkJsonStringify(parsed);
+  }
+
+  var started = qkBeginUndo("QuickKit: Edit MOGRT text");
+  try {
+    param.setValue(write, 1);
+  } catch (eSet) {
+    qkEndUndo(started);
+    return qkErr("Premiere refused the text change (" + qkErrText(eSet) + ").");
+  }
+  qkEndUndo(started);
+
+  return qkJsonStringify({
+    ok: true,
+    text: text,
+    message: "Text updated on \"" + qkPrClipLabel(clip) + "\"."
+  });
+}
+
+function qkPrMogrtSetParam(payloadJson) {
+  if (qkHostId() !== "PPRO") return qkErr("MOGRT controls are Premiere-only.");
+  var payload = null;
+  try {
+    payload = qkJsonParse(qkStr(payloadJson));
+  } catch (ePayload) {
+    return qkErr("QuickKit could not read that MOGRT change.");
+  }
+  if (!payload) return qkErr("QuickKit could not read that MOGRT change.");
+
+  var found = qkPrSequence();
+  if (found.error) return qkErr(found.error);
+  var clip = qkPrFindClip(found.sequence, payload.nodeId);
+  if (!clip) return qkErr("That MOGRT is no longer on the timeline. Insert it again.");
+  var component = qkPrMogrtComponent(clip);
+  if (!component) return qkErr("That clip is not a MOGRT any more.");
+
+  var index = qkPrNumber(payload.index, -1);
+  var param = null;
+  try {
+    param = component.properties[index];
+  } catch (eParam) {}
+  if (!param) return qkErr("That control no longer exists in this template.");
+
+  var value = payload.value;
+  var started = qkBeginUndo("QuickKit: Edit MOGRT control");
+  try {
+    if (qkStr(payload.kind) === "checkbox") {
+      param.setValue(value ? true : false, 1);
+    } else {
+      var number = Number(value);
+      if (isNaN(number)) {
+        qkEndUndo(started);
+        return qkErr("That control needs a number.");
+      }
+      param.setValue(number, 1);
+    }
+  } catch (eSet) {
+    qkEndUndo(started);
+    return qkErr("Premiere refused the change (" + qkErrText(eSet) + ").");
+  }
+  qkEndUndo(started);
+
+  return qkJsonStringify({
+    ok: true,
+    message: "Control updated on \"" + qkPrClipLabel(clip) + "\"."
+  });
+}
+
+/* ---------- optional bin organizer ---------- */
+
+var QK_PR_BINS = ["Footage", "Audio", "Graphics", "Exports"];
+
+function qkPrRootBin() {
+  try {
+    if (app.project && app.project.rootItem) return app.project.rootItem;
+  } catch (eRoot) {}
+  return null;
+}
+
+function qkPrFindBin(parent, name) {
+  if (!parent) return null;
+  var children = parent.children;
+  var count = qkPrNumber(children ? children.numItems : 0, 0);
+  for (var i = 0; i < count; i++) {
+    var item = children[i];
+    if (!item) continue;
+    if (qkStr(item.name) === name && qkStr(item.type) === "BIN") return item;
+  }
+  return null;
+}
+
+function qkPrEnsureBins(root) {
+  var created = [];
+  var existing = [];
+  for (var i = 0; i < QK_PR_BINS.length; i++) {
+    var name = QK_PR_BINS[i];
+    var bin = qkPrFindBin(root, name);
+    if (bin) {
+      existing.push(name);
+      continue;
+    }
+    var made = null;
+    try {
+      made = root.createBin(name);
+    } catch (eBin) {}
+    if (made) created.push(name);
+  }
+  return { created: created, existing: existing };
+}
+
+function qkPrProjectSelection() {
+  var selection = null;
+  try {
+    if (typeof app.getCurrentProjectViewSelection === "function") {
+      selection = app.getCurrentProjectViewSelection();
+    }
+  } catch (eSel) {}
+  if (!selection || !selection.length) {
+    return { error: "Nothing is selected in the Project panel. Select the items you want to organize, then try again." };
+  }
+  return { items: selection };
+}
+
+function qkPrBinForItem(item) {
+  if (qkStr(item.type) === "BIN") return "";
+  try {
+    if (typeof item.isSequence === "function" && item.isSequence()) return "Exports";
+  } catch (eSeq) {}
+  var path = "";
+  try {
+    path = qkStr(item.getMediaPath()).toLowerCase();
+  } catch (ePath) {}
+  var dot = path.lastIndexOf(".");
+  var ext = dot >= 0 ? path.substring(dot + 1) : "";
+  if (ext === "wav" || ext === "mp3" || ext === "aif" || ext === "aiff" || ext === "m4a" || ext === "aac" || ext === "flac" || ext === "ogg" || ext === "wma") return "Audio";
+  if (ext === "png" || ext === "jpg" || ext === "jpeg" || ext === "gif" || ext === "bmp" || ext === "tif" || ext === "tiff" || ext === "psd" || ext === "ai" || ext === "eps" || ext === "svg" || ext === "mogrt") return "Graphics";
+  if (ext === "") return "";
+  return "Footage";
+}
+
+function qkPrBulkName(name, payload) {
+  var mode = qkStr(payload.mode) || "replace";
+  if (mode === "prefix") {
+    return qkStr(payload.prefix) + name + qkStr(payload.suffix);
+  }
+  if (mode === "number") {
+    var start = qkPrNumber(payload.start, 1);
+    var padding = qkPrNumber(payload.padding, 2);
+    if (padding < 0) padding = 0;
+    if (padding > 6) padding = 6;
+    var number = String(Math.floor(start + qkPrNumber(payload.offset, 0)));
+    while (number.length < padding) number = "0" + number;
+    return qkStr(payload.prefix) + number + qkStr(payload.suffix);
+  }
+  var find = qkStr(payload.find);
+  if (find === "") return name;
+  var replace = qkStr(payload.replace);
+  return name.split(find).join(replace);
+}
+
+function qkPrBins(payloadJson) {
+  if (qkHostId() !== "PPRO") return qkErr("The bin organizer works in Premiere Pro's Project panel.");
+  var payload = null;
+  try {
+    payload = qkJsonParse(qkStr(payloadJson));
+  } catch (ePayload) {
+    return qkErr("QuickKit could not read that bin request.");
+  }
+  if (!payload) payload = {};
+
+  var action = qkStr(payload.action) || "create";
+  var root = qkPrRootBin();
+  if (!root) return qkErr("Premiere did not return the project panel.");
+
+  var started = qkBeginUndo("QuickKit: Bin organizer");
+  var result = { ok: true, created: [], existing: [], moved: 0, renamed: 0, notes: [] };
+  try {
+    if (action === "create" || action === "sort") {
+      var bins = qkPrEnsureBins(root);
+      result.created = bins.created;
+      result.existing = bins.existing;
+    }
+
+    if (action === "sort") {
+      var selected = qkPrProjectSelection();
+      if (selected.error) {
+        return qkErr(selected.error);
+      }
+      for (var i = 0; i < selected.items.length; i++) {
+        var item = selected.items[i];
+        if (!item) continue;
+        if (qkStr(item.type) === "BIN") {
+          result.notes.push(qkStr(item.name) + " is a bin");
+          continue;
+        }
+        var binName = qkPrBinForItem(item);
+        if (binName === "") {
+          result.notes.push(qkStr(item.name) + " is not media QuickKit can classify");
+          continue;
+        }
+        var bin = qkPrFindBin(root, binName);
+        if (!bin) {
+          result.notes.push("No " + binName + " bin");
+          continue;
+        }
+        try {
+          item.moveBin(bin);
+          result.moved++;
+        } catch (eMove) {
+          result.notes.push(qkStr(item.name) + " could not move (" + qkErrText(eMove) + ")");
+        }
+      }
+    }
+
+    if (action === "rename") {
+      var picked = qkPrProjectSelection();
+      if (picked.error) {
+        return qkErr(picked.error);
+      }
+      var index = 0;
+      for (var r = 0; r < picked.items.length; r++) {
+        var target = picked.items[r];
+        if (!target) continue;
+        if (qkStr(target.type) === "BIN") {
+          result.notes.push(qkStr(target.name) + " is a bin; bins are not renamed in bulk");
+          continue;
+        }
+        var oldName = qkStr(target.name);
+        var newName = qkPrBulkName(oldName, payload);
+        if (newName === "" || newName === oldName) continue;
+        if (newName.length > 200) newName = newName.substring(0, 200);
+        try {
+          target.name = newName;
+          result.renamed++;
+          index++;
+        } catch (eRename) {
+          result.notes.push(oldName + " could not be renamed (" + qkErrText(eRename) + ")");
+        }
+      }
+    }
+  } finally {
+    qkEndUndo(started);
+  }
+
+  if (action !== "create" && action !== "sort" && action !== "rename") {
+    return qkErr("Unknown bin action: " + action);
+  }
+
+  var message = "";
+  if (action === "create") {
+    message = result.created.length
+      ? "Created " + result.created.join(", ") + "."
+      : "The standard bins already exist (" + result.existing.join(", ") + ").";
+  } else if (action === "sort") {
+    message = "Moved " + qkPlural(result.moved, "item", "items") + " into the standard bins.";
+  } else {
+    message = "Renamed " + qkPlural(result.renamed, "item", "items") + ".";
+  }
+  if (result.notes.length) message += " " + result.notes.join("; ") + ".";
+
+  result.message = message;
+  return qkJsonStringify(result);
+}
+
+/* ============================================================
  * Library apply + preview generation (Part 6B)
  *
  * qkLibraryApply    — applies one library item to the current selection.
