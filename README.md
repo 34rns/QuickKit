@@ -632,3 +632,7 @@ Your own data never goes in the extension folder:
 see `docs/ASSET_LICENSES.md`. The bundled FFmpeg build is a separate program
 under its own licence (GPL or LGPL, depending on the build) — see
 `bin/ffmpeg/NOTICE.txt`.
+
+## Support
+
+[Buy me a coffee](https://www.supportkori.com/rnsofficial)
